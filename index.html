@@ -30,15 +30,23 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 #panel input[type=file] { width: 100%; margin-top: 5px; color: #837a9c; font-size: 10px; }
 #panel .chk { display: flex; align-items: center; gap: 5px; margin-top: 9px; }
 #panel .chk input { width: auto; margin: 0; }
+#panel .grp { margin: 14px 0 2px; padding-top: 9px; border-top: 1px solid rgba(150,130,200,0.16); color: #b59ae8; font-size: 11px; }
 #panel .hint { margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(150,130,200,0.14); color: #837a9c; font-size: 11px; }
 </style>
 <script src="three.min.js"></script>
-<!-- 加载顺序 = 依赖顺序：共享状态 → 幕布 → 专辑卡 → 歌词 → 场景/循环。
-     每个文件只负责一层，改一层不会波及另一层（见各文件头部说明）。 -->
+<!-- 加载顺序 = 依赖顺序，每个文件只负责一层（见各文件头部说明）：
+       core 共享状态/常量 → audio 音频分析 → band 幕布曲面 → media 专辑卡
+       → lyrics 歌词 → shaders GLSL 源码 → lake 场景与绘制 → props 属性接线
+       → app 启动与主循环
+     文件之间是普通 <script> 全局作用域，不用 ES Module（file:// 下 import 会被 CORS 拦）。 -->
 <script src="js/core.js"></script>
+<script src="js/audio.js"></script>
 <script src="js/band.js"></script>
 <script src="js/media.js"></script>
 <script src="js/lyrics.js"></script>
+<script src="js/shaders.js"></script>
+<script src="js/lake.js"></script>
+<script src="js/props.js"></script>
 <script src="app.js"></script>
 </head>
 <body>
@@ -53,36 +61,70 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
       <option value="mono">暖白单色</option>
     </select>
   </label>
-  <label>灵敏度 <span id="v_sens">1.30</span><input id="sensitivity" type="range" min="0.4" max="3" step="0.05" value="1.30"></label>
-  <label>起跳速度 <span id="v_atk">0.58</span><input id="attack" type="range" min="0.3" max="1" step="0.02" value="0.58"></label>
-  <label>回落速度 <span id="v_dec">0.12</span><input id="decay" type="range" min="0.05" max="0.6" step="0.01" value="0.12"></label>
-  <label>低频展开 <span id="v_warp">0.62</span><input id="warp" type="range" min="0.35" max="1" step="0.01" value="0.62"></label>
-  <label>频率定位强度 <span id="v_height">1.05</span><input id="height" type="range" min="0" max="3" step="0.05" value="1.05"></label>
-  <label>波纹强度 <span id="v_ripple">0.60</span><input id="ripple" type="range" min="0" max="2" step="0.05" value="0.60"></label>
-  <label>顶面发光 <span id="v_glow">0.9</span><input id="glow" type="range" min="0" max="2.5" step="0.1" value="0.9"></label>
-  <label>静音呼吸 <span id="v_idle">0.90</span><input id="idle" type="range" min="0" max="2" step="0.05" value="0.90"></label>
-  <label>垂直仰角 <span id="v_angle">24</span><input id="cameraangle" type="range" min="15" max="45" step="1" value="24"></label>
-  <label>水平角度 <span id="v_azimuth">120</span><input id="cameraazimuth" type="range" min="0" max="360" step="1" value="120"></label>
+
+  <div class="grp">音频律动</div>
+  <label>灵敏度（%） <span id="v_sens">1.30</span><input id="sensitivity" type="range" min="40" max="300" step="1" value="130"></label>
+  <label>起跳速度（%） <span id="v_atk">0.58</span><input id="attack" type="range" min="30" max="100" step="1" value="58"></label>
+  <label>回落速度（%） <span id="v_dec">0.12</span><input id="decay" type="range" min="5" max="60" step="1" value="12"></label>
+  <label>低频展开（%） <span id="v_warp">0.62</span><input id="warp" type="range" min="35" max="100" step="1" value="62"></label>
+  <label>频率定位强度（%） <span id="v_height">1.00</span><input id="height" type="range" min="0" max="300" step="1" value="100"></label>
+  <label>波纹强度（%） <span id="v_ripple">0.60</span><input id="ripple" type="range" min="0" max="200" step="1" value="60"></label>
+  <label>顶面发光（%） <span id="v_glow">0.90</span><input id="glow" type="range" min="0" max="250" step="1" value="90"></label>
+  <label>静音呼吸（%） <span id="v_idle">0.90</span><input id="idle" type="range" min="0" max="200" step="1" value="90"></label>
+
+  <div class="grp">镜头与地形</div>
+  <label>垂直仰角（°） <span id="v_angle">24</span><input id="cameraangle" type="range" min="15" max="45" step="1" value="24"></label>
+  <label>水平角度（°） <span id="v_azimuth">120</span><input id="cameraazimuth" type="range" min="0" max="360" step="1" value="120"></label>
   <label>镜头距离 <span id="v_distance">92</span><input id="cameradistance" type="range" min="55" max="120" step="1" value="92"></label>
-  <label>视野角度 <span id="v_fov">50</span><input id="camerafov" type="range" min="40" max="65" step="1" value="50"></label>
-  <label>地形范围 <span id="v_range">1.18</span><input id="range" type="range" min="0.8" max="1.4" step="0.02" value="1.18"></label>
-  <label>渲染清晰度 <span id="v_rscale">1.00</span><input id="renderscale" type="range" min="0.75" max="2" step="0.05" value="1.00"></label>
-  <label>专辑卡大小 <span id="v_mediascale">0.58</span><input id="mediascale" type="range" min="0.4" max="1.1" step="0.01" value="0.58"></label>
-  <label>专辑环绕角度 <span id="v_mediaorbit">-10</span><input id="mediaorbit" type="range" min="-35" max="35" step="1" value="-10"></label>
-  <label>专辑高度 <span id="v_mediay">1.2</span><input id="mediay" type="range" min="-8" max="8" step="0.2" value="1.2"></label>
-  <label>歌名大小 <span id="v_titlescale">1.00</span><input id="mediatitlescale" type="range" min="0.7" max="1.3" step="0.02" value="1.00"></label>
-  <label>歌词大小 <span id="v_lyricsscale">0.90</span><input id="lyricsscale" type="range" min="0.6" max="1.3" step="0.01" value="0.90"></label>
-  <label>歌词高度 <span id="v_lyricsy">0</span><input id="lyricsy" type="range" min="-8" max="8" step="1" value="0"></label>
-  <label>歌词弧度(曲面弯) <span id="v_lyricscurve">1.00</span><input id="lyricscurve" type="range" min="0" max="2" step="0.05" value="1.00"></label>
-  <label>环绕位置 <span id="v_lyricsorbit">0</span><input id="lyricsorbit" type="range" min="-25" max="25" step="1" value="0"></label>
-  <label>歌词偏移(ms) <span id="v_lyricsoffset">0</span><input id="lyricsoffset" type="range" min="-2000" max="2000" step="50" value="0"></label>
-  <label>FPS 上限 <span id="v_fps">60</span><input id="fpscap" type="range" min="24" max="120" step="1" value="60"></label>
+  <label>视野角度（°） <span id="v_fov">50</span><input id="camerafov" type="range" min="40" max="65" step="1" value="50"></label>
+  <label>地形范围（%） <span id="v_range">1.20</span><input id="range" type="range" min="80" max="140" step="1" value="120"></label>
   <label class="chk"><input id="parallax" type="checkbox" checked>微弱鼠标视差</label>
+
+  <div class="grp">性能与画质</div>
+  <label>渲染分辨率
+    <select id="resolution">
+      <option value="auto">跟随窗口 1:1（最省）</option>
+      <option value="hd">1080p</option>
+      <option value="qhd">1440p / 2K</option>
+      <option value="uhd">2160p / 4K</option>
+    </select>
+  </label>
+  <label>渲染清晰度
+    <select id="renderscale">
+      <option value="0.75">75%（最省）</option>
+      <option value="0.85">85%</option>
+      <option value="1" selected>100%</option>
+      <option value="1.25">125%</option>
+      <option value="1.5">150%</option>
+      <option value="2">200%（超采样）</option>
+    </select>
+  </label>
+  <label>FPS 上限
+    <select id="fpscap">
+      <option value="30">30（最省）</option>
+      <option value="60" selected>60</option>
+      <option value="90">90</option>
+      <option value="120">120</option>
+    </select>
+  </label>
+
+  <div class="grp">音乐信息卡</div>
   <label class="chk"><input id="musiconly" type="checkbox" checked>只显示播放中的音乐（视频/暂停收起）</label>
-  <label class="chk"><input id="idlemark" type="checkbox" checked>空闲时留一颗待机光点</label>
   <label class="chk"><input id="showmedia" type="checkbox" checked>悬浮专辑封面与歌名</label>
+  <label>专辑卡大小（%） <span id="v_mediascale">0.60</span><input id="mediascale" type="range" min="40" max="110" step="1" value="60"></label>
+  <label>专辑环绕角度 <span id="v_mediaorbit">-10</span><input id="mediaorbit" type="range" min="-35" max="35" step="1" value="-10"></label>
+  <label>专辑高度（×0.1） <span id="v_mediay">1.2</span><input id="mediay" type="range" min="-80" max="80" step="1" value="12"></label>
+  <label>歌名大小（%） <span id="v_titlescale">1.00</span><input id="mediatitlescale" type="range" min="70" max="130" step="1" value="100"></label>
+  <label class="chk"><input id="idlemark" type="checkbox" checked>空闲时留一颗待机光点</label>
+
+  <div class="grp">歌词</div>
   <label class="chk"><input id="showlyrics" type="checkbox" checked>弧形双行本地歌词</label>
-  <label class="chk"><input id="hidecredits" type="checkbox">隐藏开头的词曲署名</label>
+  <label>歌词大小（%） <span id="v_lyricsscale">0.90</span><input id="lyricsscale" type="range" min="60" max="130" step="1" value="90"></label>
+  <label>歌词弧度（%，0 为平幕） <span id="v_lyricscurve">1.00</span><input id="lyricscurve" type="range" min="0" max="200" step="1" value="100"></label>
+  <label>歌词高度（×0.1） <span id="v_lyricsy">0.0</span><input id="lyricsy" type="range" min="-80" max="80" step="1" value="0"></label>
+  <label>环绕位置 <span id="v_lyricsorbit">0</span><input id="lyricsorbit" type="range" min="-25" max="25" step="1" value="0"></label>
+  <label>歌词时间偏移（毫秒，负数=提前） <span id="v_lyricsoffset">0</span><input id="lyricsoffset" type="number" min="-2000" max="2000" step="10" value="0"></label>
+  <label class="chk"><input id="hidecredits" type="checkbox" checked>隐藏开头的词曲署名</label>
   <label>浏览器测试封面<input id="coverfile" type="file" accept="image/*"></label>
   <label>选择本地 LRC 歌词<input id="lyricsfile" type="file" accept=".lrc,text/plain"></label>
   <div class="hint">WE 内使用：<b>本地优先</b>（壁纸内 lyrics/歌名.lrc →<br>歌词文件夹 → LRC 完整路径），本地没有才联网匹配<br>开启「歌词诊断信息」可在左下角看到当前来源</div>

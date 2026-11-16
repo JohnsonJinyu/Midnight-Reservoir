@@ -1,339 +1,389 @@
 {
-  "title": "Spectral Lake 3D · Shader",
-  "type": "web",
-  "file": "index.html",
-  "description": "A wide-vista 160x160 GLSL spectral lake with one shared curved screen for both the album card and the lyrics. The screen has a fixed chord length and its two ends curl toward the viewer, so the perspective projection itself produces the near-large-far-small look: content in the middle sits furthest away and reads smallest, the ends come closer and grow, and lines and covers arch naturally. Curvature, orbit along the wall and overall scale are independent controls, and the cover, title, progress line and lyrics all share the same surface equation. The square album object drifts gently like a leaf on water, nudged by low-frequency energy. Music-only mode hides the card and the lyrics unless a music session is actually playing: the media contentType reported by Wallpaper Engine filters out video and image sessions (paused video apps otherwise keep their title in the Windows media session and steal the card), and paused or stopped playback sinks the whole band away after a short grace period, then floats back when playback resumes. When nothing is playing the card is not shown with placeholder text at all: empty sessions and placeholder titles are treated as no media, and a very faint breathing beacon can take its place instead (optional), so an idle desktop is just the lake and a distant light. Two-line lyrics load local LRC first (explicit path, wallpaper lyrics folder, configured folders, then the last successful match cached locally) and fall back to online matching: several query spellings (raw title, cleaned title, title only) across every working lyric source, skipping empty and instrumental-only results, with a no-timestamp fallback. Failed lookups retry automatically, and non-music sessions are never searched. Credit lines at the start are shown by default and can be hidden. Synchronized to the real media timeline. No meteors or scrolling history.",
-  "contentrating": "Everyone",
-  "tags": [
-    "Audio",
-    "3D",
-    "Abstract",
-    "Music"
-  ],
-  "preview": "preview.jpg",
-  "supportsaudioprocessing": true,
-  "general": {
-    "supportsaudioprocessing": true,
-    "properties": {
-      "theme": {
-        "order": 0,
-        "text": "配色",
-        "type": "combo",
-        "value": "dusk",
-        "options": [
-          {
-            "label": "霁紫暖橙",
-            "value": "dusk"
-          },
-          {
-            "label": "深海冰蓝",
-            "value": "ocean"
-          },
-          {
-            "label": "熔金余烬",
-            "value": "ember"
-          },
-          {
-            "label": "暖白单色",
-            "value": "mono"
-          }
-        ]
-      },
-      "sensitivity": {
-        "order": 1,
-        "text": "灵敏度",
-        "type": "slider",
-        "value": 1.3,
-        "min": 0.4,
-        "max": 3,
-        "fraction": true
-      },
-      "attack": {
-        "order": 2,
-        "text": "起跳速度",
-        "type": "slider",
-        "value": 0.58,
-        "min": 0.3,
-        "max": 1,
-        "fraction": true
-      },
-      "decay": {
-        "order": 3,
-        "text": "回落速度",
-        "type": "slider",
-        "value": 0.12,
-        "min": 0.05,
-        "max": 0.6,
-        "fraction": true
-      },
-      "warp": {
-        "order": 4,
-        "text": "低频展开",
-        "type": "slider",
-        "value": 0.62,
-        "min": 0.35,
-        "max": 1,
-        "fraction": true
-      },
-      "height": {
-        "order": 5,
-        "text": "频率定位强度",
-        "type": "slider",
-        "value": 1.05,
-        "min": 0,
-        "max": 3,
-        "fraction": true
-      },
-      "ripple": {
-        "order": 6,
-        "text": "波纹强度",
-        "type": "slider",
-        "value": 0.6,
-        "min": 0,
-        "max": 2,
-        "fraction": true
-      },
-      "glow": {
-        "order": 7,
-        "text": "顶面发光",
-        "type": "slider",
-        "value": 0.9,
-        "min": 0,
-        "max": 2.5,
-        "fraction": true
-      },
-      "idle": {
-        "order": 8,
-        "text": "静音呼吸",
-        "type": "slider",
-        "value": 0.9,
-        "min": 0,
-        "max": 2,
-        "fraction": true
-      },
-      "cameraangle": {
-        "order": 9,
-        "text": "垂直仰角",
-        "type": "slider",
-        "value": 24,
-        "min": 15,
-        "max": 45
-      },
-      "cameraazimuth": {
-        "order": 10,
-        "text": "水平角度",
-        "type": "slider",
-        "value": 120,
-        "min": 0,
-        "max": 360
-      },
-      "cameradistance": {
-        "order": 11,
-        "text": "镜头距离",
-        "type": "slider",
-        "value": 92,
-        "min": 55,
-        "max": 120
-      },
-      "camerafov": {
-        "order": 12,
-        "text": "视野角度",
-        "type": "slider",
-        "value": 50,
-        "min": 40,
-        "max": 65
-      },
-      "range": {
-        "order": 13,
-        "text": "地形范围",
-        "type": "slider",
-        "value": 1.18,
-        "min": 0.8,
-        "max": 1.4,
-        "fraction": true
-      },
-      "mediaheader": {
-        "order": 14,
-        "text": "=== 悬浮专辑 / Media ===",
-        "type": "text"
-      },
-      "musiconly": {
-        "order": 15,
-        "text": "只显示播放中的音乐（视频、暂停时收起）",
-        "type": "bool",
-        "value": true
-      },
-      "idlemark": {
-        "order": 16,
-        "text": "空闲时留一颗待机光点（没放音乐时）",
-        "type": "bool",
-        "value": true
-      },
-      "showmedia": {
-        "order": 17,
-        "text": "显示悬浮专辑封面与歌名",
-        "type": "bool",
-        "value": true
-      },
-      "mediascale": {
-        "order": 18,
-        "text": "专辑卡大小",
-        "type": "slider",
-        "value": 0.58,
-        "min": 0.4,
-        "max": 1.1,
-        "fraction": true,
-        "condition": "showmedia.value"
-      },
-      "mediaorbit": {
-        "order": 19,
-        "text": "专辑环绕角度（沿圆柱壁移动）",
-        "type": "slider",
-        "value": -10,
-        "min": -35,
-        "max": 35,
-        "condition": "showmedia.value"
-      },
-      "mediay": {
-        "order": 20,
-        "text": "专辑高度",
-        "type": "slider",
-        "value": 1.2,
-        "min": -8,
-        "max": 8,
-        "condition": "showmedia.value"
-      },
-      "mediatitlescale": {
-        "order": 21,
-        "text": "歌名大小（自动缩字避免换行）",
-        "type": "slider",
-        "value": 1.0,
-        "min": 0.7,
-        "max": 1.3,
-        "fraction": true,
-        "condition": "showmedia.value"
-      },
-      "lyricsheader": {
-        "order": 22,
-        "text": "=== 弧形歌词 / Local LRC ===",
-        "type": "text"
-      },
-      "showlyrics": {
-        "order": 23,
-        "text": "显示弧形双行本地歌词",
-        "type": "bool",
-        "value": true
-      },
-      "onlinelyrics": {
-        "order": 24,
-        "text": "本地找不到时联网匹配歌词",
-        "type": "bool",
-        "value": true,
-        "condition": "showlyrics.value"
-      },
-      "hidecredits": {
-        "order": 25,
-        "text": "隐藏开头的词曲署名",
-        "type": "bool",
-        "value": false,
-        "condition": "showlyrics.value"
-      },
-      "lyricsdir": {
-        "order": 26,
-        "text": "歌词文件夹（多个用分号分隔，如 D:\\Music\\Lyrics）",
-        "type": "textinput",
-        "value": "",
-        "condition": "showlyrics.value"
-      },
-      "lyricsfile": {
-        "order": 27,
-        "text": "LRC 完整路径（可选，优先于文件夹）",
-        "type": "textinput",
-        "value": "",
-        "condition": "showlyrics.value"
-      },
-      "lyricsscale": {
-        "order": 28,
-        "text": "歌词大小",
-        "type": "slider",
-        "value": 0.9,
-        "min": 0.6,
-        "max": 1.3,
-        "fraction": true,
-        "condition": "showlyrics.value"
-      },
-      "lyricsy": {
-        "order": 29,
-        "text": "歌词高度",
-        "type": "slider",
-        "value": 0,
-        "min": -8,
-        "max": 8,
-        "condition": "showlyrics.value"
-      },
-      "lyricsorbit": {
-        "order": 30,
-        "text": "歌词环绕位置（沿幕布左右滑动）",
-        "type": "slider",
-        "value": 0,
-        "min": -25,
-        "max": 25,
-        "condition": "showlyrics.value"
-      },
-      "lyricscurve": {
-        "order": 31,
-        "text": "歌词弧度（曲面弯曲，0 为平幕）",
-        "type": "slider",
-        "value": 1.0,
-        "min": 0,
-        "max": 2.0,
-        "fraction": true,
-        "condition": "showlyrics.value"
-      },
-      "lyricsoffset": {
-        "order": 32,
-        "text": "歌词时间偏移（毫秒）",
-        "type": "slider",
-        "value": 0,
-        "min": -2000,
-        "max": 2000,
-        "condition": "showlyrics.value"
-      },
-      "lyricsdebug": {
-        "order": 33,
-        "text": "歌词诊断信息（排查用，平时关闭）",
-        "type": "bool",
-        "value": false,
-        "condition": "showlyrics.value"
-      },
-      "performanceheader": {
-        "order": 34,
-        "text": "=== 性能 / Performance ===",
-        "type": "text"
-      },
-      "renderscale": {
-        "order": 35,
-        "text": "渲染清晰度",
-        "type": "slider",
-        "value": 1.0,
-        "min": 0.75,
-        "max": 2.0,
-        "fraction": true
-      },
-      "parallax": {
-        "order": 36,
-        "text": "鼠标视差",
-        "type": "bool",
-        "value": true
-      },
-      "fpscap": {
-        "order": 37,
-        "text": "FPS 上限",
-        "type": "slider",
-        "value": 60,
-        "min": 24,
-        "max": 120
-      }
-    }
-  }
+	"description": "A spectral cube lake with one shared curved screen for the album card and two-line lyrics. Grouped settings: audio response, camera, performance presets, media card and lyrics. Stepped sliders use integer percent values (100 = default) so every step is reachable.",
+	"file": "index.html",
+	"preview": "preview.jpg",
+	"general": {
+		"supportsaudioprocessing": true,
+		"properties": {
+			"theme": {
+				"text": "配色",
+				"type": "combo",
+				"value": "dusk",
+				"options": [
+					{
+						"label": "霁紫暖橙",
+						"value": "dusk"
+					},
+					{
+						"label": "深海冰蓝",
+						"value": "ocean"
+					},
+					{
+						"label": "熔金余烬",
+						"value": "ember"
+					},
+					{
+						"label": "暖白单色",
+						"value": "mono"
+					}
+				],
+				"order": 0
+			},
+			"gaudio": {
+				"text": "音频律动",
+				"type": "group",
+				"order": 1
+			},
+			"sensitivitypct": {
+				"text": "灵敏度（%）",
+				"type": "slider",
+				"value": 130,
+				"min": 40,
+				"max": 300,
+				"order": 2
+			},
+			"attackpct": {
+				"text": "起跳速度（%）",
+				"type": "slider",
+				"value": 58,
+				"min": 30,
+				"max": 100,
+				"order": 3
+			},
+			"decaypct": {
+				"text": "回落速度（%）",
+				"type": "slider",
+				"value": 12,
+				"min": 5,
+				"max": 60,
+				"order": 4
+			},
+			"warppct": {
+				"text": "低频展开（%）",
+				"type": "slider",
+				"value": 62,
+				"min": 35,
+				"max": 100,
+				"order": 5
+			},
+			"heightpct": {
+				"text": "频率定位强度（%）",
+				"type": "slider",
+				"value": 100,
+				"min": 0,
+				"max": 300,
+				"order": 6
+			},
+			"ripplepct": {
+				"text": "波纹强度（%）",
+				"type": "slider",
+				"value": 60,
+				"min": 0,
+				"max": 200,
+				"order": 7
+			},
+			"glowpct": {
+				"text": "顶面发光（%）",
+				"type": "slider",
+				"value": 90,
+				"min": 0,
+				"max": 250,
+				"order": 8
+			},
+			"idlepct": {
+				"text": "静音呼吸（%）",
+				"type": "slider",
+				"value": 90,
+				"min": 0,
+				"max": 200,
+				"order": 9
+			},
+			"gcamera": {
+				"text": "镜头与地形",
+				"type": "group",
+				"order": 10
+			},
+			"cameraangle": {
+				"text": "垂直仰角（°）",
+				"type": "slider",
+				"value": 24,
+				"min": 15,
+				"max": 45,
+				"order": 11
+			},
+			"cameraazimuth": {
+				"text": "水平角度（°）",
+				"type": "slider",
+				"value": 120,
+				"min": 0,
+				"max": 360,
+				"order": 12
+			},
+			"cameradistance": {
+				"text": "镜头距离",
+				"type": "slider",
+				"value": 92,
+				"min": 55,
+				"max": 120,
+				"order": 13
+			},
+			"camerafov": {
+				"text": "视野角度（°）",
+				"type": "slider",
+				"value": 50,
+				"min": 40,
+				"max": 65,
+				"order": 14
+			},
+			"rangepct": {
+				"text": "地形范围（%）",
+				"type": "slider",
+				"value": 120,
+				"min": 80,
+				"max": 140,
+				"order": 15
+			},
+			"parallax": {
+				"text": "鼠标视差",
+				"type": "bool",
+				"value": true,
+				"order": 16
+			},
+			"gperf": {
+				"text": "性能与画质",
+				"type": "group",
+				"order": 17
+			},
+			"resolution": {
+				"text": "渲染分辨率",
+				"type": "combo",
+				"value": "auto",
+				"options": [
+					{
+						"label": "跟随窗口 1:1（最省）",
+						"value": "auto"
+					},
+					{
+						"label": "1080p",
+						"value": "hd"
+					},
+					{
+						"label": "1440p / 2K",
+						"value": "qhd"
+					},
+					{
+						"label": "2160p / 4K",
+						"value": "uhd"
+					}
+				],
+				"order": 18
+			},
+			"renderscale": {
+				"text": "渲染清晰度微调",
+				"type": "combo",
+				"value": "1",
+				"options": [
+					{
+						"label": "75%（最省）",
+						"value": "0.75"
+					},
+					{
+						"label": "85%",
+						"value": "0.85"
+					},
+					{
+						"label": "100%",
+						"value": "1"
+					},
+					{
+						"label": "125%",
+						"value": "1.25"
+					},
+					{
+						"label": "150%",
+						"value": "1.5"
+					},
+					{
+						"label": "200%（超采样）",
+						"value": "2"
+					}
+				],
+				"order": 19
+			},
+			"fpscap": {
+				"text": "FPS 上限",
+				"type": "combo",
+				"value": "60",
+				"options": [
+					{
+						"label": "30（最省）",
+						"value": "30"
+					},
+					{
+						"label": "60",
+						"value": "60"
+					},
+					{
+						"label": "90",
+						"value": "90"
+					},
+					{
+						"label": "120",
+						"value": "120"
+					}
+				],
+				"order": 20
+			},
+			"gmedia": {
+				"text": "音乐信息卡",
+				"type": "group",
+				"order": 21
+			},
+			"musiconly": {
+				"text": "只显示正在播放的音乐",
+				"type": "bool",
+				"value": true,
+				"order": 22
+			},
+			"showmedia": {
+				"text": "显示悬浮专辑封面与歌名",
+				"type": "bool",
+				"value": true,
+				"order": 23
+			},
+			"mediascalepct": {
+				"text": "专辑卡大小（%）",
+				"type": "slider",
+				"value": 60,
+				"min": 40,
+				"max": 110,
+				"condition": "showmedia.value == true",
+				"order": 24
+			},
+			"mediaorbit": {
+				"text": "专辑环绕角度",
+				"type": "slider",
+				"value": -10,
+				"min": -35,
+				"max": 35,
+				"condition": "showmedia.value == true",
+				"order": 25
+			},
+			"mediayx10": {
+				"text": "专辑高度（10=1.0）",
+				"type": "slider",
+				"value": 12,
+				"min": -80,
+				"max": 80,
+				"condition": "showmedia.value == true",
+				"order": 26
+			},
+			"mediatitlescalepct": {
+				"text": "歌名大小（%）",
+				"type": "slider",
+				"value": 100,
+				"min": 70,
+				"max": 130,
+				"condition": "showmedia.value == true",
+				"order": 27
+			},
+			"idlemark": {
+				"text": "空闲时留一颗待机光点",
+				"type": "bool",
+				"value": true,
+				"order": 28
+			},
+			"glyrics": {
+				"text": "歌词",
+				"type": "group",
+				"order": 29
+			},
+			"showlyrics": {
+				"text": "显示弧形双行歌词",
+				"type": "bool",
+				"value": true,
+				"order": 30
+			},
+			"lyricsscalepct": {
+				"text": "歌词大小（%）",
+				"type": "slider",
+				"value": 90,
+				"min": 60,
+				"max": 130,
+				"condition": "showlyrics.value == true",
+				"order": 31
+			},
+			"lyricscurvepct": {
+				"text": "歌词弧度（%，0 = 平幕）",
+				"type": "slider",
+				"value": 100,
+				"min": 0,
+				"max": 200,
+				"condition": "showlyrics.value == true",
+				"order": 32
+			},
+			"lyricsyx10": {
+				"text": "歌词高度（10=1.0）",
+				"type": "slider",
+				"value": 0,
+				"min": -80,
+				"max": 80,
+				"condition": "showlyrics.value == true",
+				"order": 33
+			},
+			"lyricsorbit": {
+				"text": "歌词环绕位置",
+				"type": "slider",
+				"value": 0,
+				"min": -25,
+				"max": 25,
+				"condition": "showlyrics.value == true",
+				"order": 34
+			},
+			"lyricsoffset": {
+				"text": "歌词偏移 ms（负=提前）",
+				"type": "textinput",
+				"value": "0",
+				"condition": "showlyrics.value == true",
+				"order": 35
+			},
+			"hidecredits": {
+				"text": "跳过开头的词曲署名",
+				"type": "bool",
+				"value": true,
+				"condition": "showlyrics.value == true",
+				"order": 36
+			},
+			"onlinelyrics": {
+				"text": "联网歌词匹配",
+				"type": "bool",
+				"value": true,
+				"condition": "showlyrics.value == true",
+				"order": 37
+			},
+			"lyricsdir": {
+				"text": "歌词文件夹（分号分隔）",
+				"type": "textinput",
+				"value": "",
+				"condition": "showlyrics.value == true",
+				"order": 38
+			},
+			"lyricsfile": {
+				"text": "LRC 路径（优先）",
+				"type": "textinput",
+				"value": "",
+				"condition": "showlyrics.value == true",
+				"order": 39
+			},
+			"lyricsdebug": {
+				"text": "显示歌词诊断信息",
+				"type": "bool",
+				"value": false,
+				"condition": "showlyrics.value == true",
+				"order": 40
+			}
+		}
+	},
+	"title": "Spectral Lake 3D · Shader",
+	"type": "web"
 }

@@ -23,12 +23,14 @@ const LYRICS = {
   lines: IN_WE ? [] : DEMO_LYRICS.slice(), source: IN_WE ? '' : 'browser-demo',
   index: -1, transition: null, dirty: true, loadToken: 0, status: IN_WE ? 'empty' : 'demo',
   explicitPath: '', requestKey: '', loadingSince: 0, retryAt: 0, retries: 0, rawText: '',
-  initialized: false, bandW: 0, bandPx: 0, bandTargetW: 0
+  initialized: false, bandW: 0, bandPx: 0, bandTargetW: 0,
+  cacheIndex: null, cacheIndexAt: -1e9, cacheIndexPending: false
 };
 let lyricsGroup = null, lyricsMesh = null, lyricsTexture = null, lyricsMaterial = null;
 
 // 制作信息行（作词/作曲/编曲…）：既用于「隐藏词曲署名」过滤，也用于判断「整首只有署名 = 纯音乐」
-const LYRIC_CREDIT = /^(作词|作詞|作曲|编曲|編曲|编曲人|制作人|製作人|监制|監製|混音|录音|錄音|出品|词|曲|原作词|原作曲|lyrics?\s*by|composed\s*by|arranged\s*by|written\s*by|produced\s*by|producer)\s*[:：]/i;
+// QQ 音乐缓存的歌词会在开头 1 秒内塞进 10 行制作名单，不滤掉会一闪而过，所以关键词要覆盖全
+const LYRIC_CREDIT = /^(作词|作詞|作曲|编曲|編曲|编曲人|制作人|製作人|监制|監製|混音|录音|錄音|录音师|錄音師|混音师|和声|和音|配音|出品人?|发行|發行|出版|企划|企劃|统筹|統籌|策划|策劃|宣传|宣傳|推广|推廣|设计|設計|封面|文案|母带|母帶|后期|後期|吉他|貝斯|贝斯|键盘|鍵盤|弦乐|弦樂|制作助理|词|曲|原作词|原作曲|op\s*\/\s*sp|op|sp|声明|聲明|版权|版權|未经|未經|lyrics?\s*by|composed\s*by|arranged\s*by|written\s*by|produced\s*by|mixed\s*by|mastered\s*by|producer|executive\s*producer)\s*[:：]/i;
 function parseLrc(text) {
   const source = String(text || '').replace(/^\uFEFF/, '');
   const lines = [];
@@ -187,7 +189,101 @@ function lyricsStorePut(key, text) {
   for (let i = 0; i < keys.length - 30; i++) delete store[keys[i]];
   try { if (window.localStorage) window.localStorage.setItem(LYRICS_STORE_KEY, JSON.stringify(store)); } catch (e) {}
 }
-// 本地优先：手动路径 → 壁纸内 lyrics/ 文件夹 → 用户歌词文件夹 → 历史缓存 → 最后才联网
+/* ============================================================================
+   本地歌词索引（由 tools/sync-lyrics.js 从 QQ 音乐缓存解密生成）
+   ----------------------------------------------------------------------------
+   为什么需要索引：光靠文件名匹配「歌名 - 歌手.lrc」时，同名不同曲、同名不同版本
+   会互相顶掉；而在线库更是经常把另一首同名歌当成这首（用户实际遇到的就是这个）。
+   索引里每条都带 duration，用「歌名 + 歌手 + 时长」三重比对，几乎不会串。
+   ========================================================================== */
+const LYRICS_INDEX_URL = 'lyrics/_index.json';
+const LYRICS_INDEX_TTL = 30;          // 秒：同步器可能边听边补文件，过期就重读
+let lyricsIndexWaiters = [];
+let lyricsIndexQueryOk = true;        // ?v= 是否能用来绕过缓存
+// 第一次不加参数（保证一定能读到），之后加时间戳绕过 CEF 缓存；
+// 万一 WE 的 file 处理器不接受带参数的路径，就自动退回不带参数
+function fetchLyricsIndexText(useQuery, cb) {
+  const url = useQuery ? (LYRICS_INDEX_URL + '?v=' + Date.now()) : LYRICS_INDEX_URL;
+  fetchLyricsUrl(url, function (text) {
+    if (!text && useQuery) {
+      lyricsIndexQueryOk = false;
+      fetchLyricsUrl(LYRICS_INDEX_URL, cb);
+      return;
+    }
+    cb(text);
+  });
+}
+function loadLyricsIndex(cb) {
+  const now = performance.now() / 1000;
+  if (LYRICS.cacheIndex && now - LYRICS.cacheIndexAt < LYRICS_INDEX_TTL) { cb(LYRICS.cacheIndex); return; }
+  lyricsIndexWaiters.push(cb);
+  if (LYRICS.cacheIndexPending) return;
+  LYRICS.cacheIndexPending = true;
+  const useQuery = LYRICS.cacheIndex !== null && lyricsIndexQueryOk;
+  fetchLyricsIndexText(useQuery, function (text) {
+    LYRICS.cacheIndexPending = false;
+    let list = null;
+    if (text) {
+      try {
+        const d = JSON.parse(text);
+        if (d && Array.isArray(d.items)) list = d.items;
+      } catch (e) { console.warn('LRC: 歌词索引不是合法 JSON'); }
+    }
+    LYRICS.cacheIndex = list || [];
+    LYRICS.cacheIndexAt = performance.now() / 1000;
+    const waiters = lyricsIndexWaiters;
+    lyricsIndexWaiters = [];
+    for (let i = 0; i < waiters.length; i++) { try { waiters[i](LYRICS.cacheIndex); } catch (e) {} }
+  });
+}
+// 三重比对：歌名必须对得上，歌手/时长加分，对不上扣分；总分不够就宁可当没找到
+function lyricIndexMatch(items, title, artist, duration) {
+  if (!items || !items.length) return null;
+  const wantTitle = lyricKey(title, '').split('|')[0];
+  const wantArtist = artist ? lyricKey('', artist).split('|')[1] : '';
+  let best = null, bestScore = -99;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i] || {};
+    const itTitle = lyricKey(it.t, '').split('|')[0];
+    if (!itTitle || !wantTitle) continue;
+    let score;
+    if (itTitle === wantTitle) score = 4;
+    else if (itTitle.indexOf(wantTitle) >= 0 || wantTitle.indexOf(itTitle) >= 0) score = 2;
+    else continue;
+    const itArtist = lyricKey('', it.a || '').split('|')[1];
+    if (wantArtist && itArtist) {
+      if (artistMatch(artist, it.a)) score += 4;
+      else if (!GENERIC_ARTIST.test(itArtist)) score -= 2;   // 歌手不符：很可能是同名另一首
+    }
+    const itDur = Number(it.d) || 0;
+    if (duration > 15 && itDur > 15) {
+      const diff = Math.abs(itDur - duration);
+      if (diff <= 4) score += 5;           // 时长几乎一致，基本可以确定是同一版
+      else if (diff <= 12) score += 1;
+      else score -= 3;
+    }
+    if (score > bestScore) { bestScore = score; best = it; }
+  }
+  return bestScore >= 6 ? best : null;
+}
+// 文件名候选：壁纸 lyrics/ 与用户指定文件夹
+function pushNameCandidates(candidates, title, artist) {
+  const names = lyricNameCandidates(title, artist);
+  // 壁纸目录下的 lyrics 子文件夹：与页面同源，WE 内一定能读到
+  for (let i = 0; i < names.length; i++) {
+    candidates.push({ url: 'lyrics/' + encodeURIComponent(names[i]), label: '壁纸 lyrics/' + names[i], local: true });
+  }
+  // 用户指定的歌词文件夹，支持用 ; 分隔多个
+  const dirs = String(CFG.lyricsDir || '').split(/[;；]/).map(function (d) {
+    return d.trim().replace(/[\\/]+$/, '');
+  }).filter(function (d) { return !!d; });
+  for (let d = 0; d < dirs.length; d++) {
+    for (let i = 0; i < names.length; i++) {
+      candidates.push({ url: lyricsFileUrl(dirs[d] + '\\' + names[i]), label: dirs[d] + '\\' + names[i], local: true });
+    }
+  }
+}
+// 本地优先：手动路径 → QQ 缓存索引 → 壁纸 lyrics/ 同名文件 → 用户歌词文件夹 → 历史缓存 → 最后才联网
 function attemptLyricsLoad(force) {
   const title = String(MEDIA.title || '').trim();
   const artist = String(MEDIA.artist || '').trim();
@@ -202,28 +298,11 @@ function attemptLyricsLoad(force) {
   // 同一首歌只加载一次：WE 会反复回调媒体属性，重复触发会把还在路上的请求全部作废（这是“一会儿有词、一会儿没词”的根源）
   if (!force && key === LYRICS.requestKey && (LYRICS.status === 'ready' || LYRICS.status === 'loading')) return;
   LYRICS.requestKey = key;
-  const candidates = [];
-  if (LYRICS.explicitPath) {
-    candidates.push({ url: lyricsFileUrl(LYRICS.explicitPath), label: '手动 · ' + LYRICS.explicitPath, local: true });
-  } else if (usableTitle) {
-    const names = lyricNameCandidates(title, artist);
-    // 壁纸目录下的 lyrics 子文件夹：与页面同源，WE 内一定能读到
-    for (let i = 0; i < names.length; i++) {
-      candidates.push({ url: 'lyrics/' + encodeURIComponent(names[i]), label: '壁纸 lyrics/' + names[i], local: true });
-    }
-    // 用户指定的歌词文件夹，支持用 ; 分隔多个
-    const dirs = String(CFG.lyricsDir || '').split(/[;；]/).map(function (d) {
-      return d.trim().replace(/[\\/]+$/, '');
-    }).filter(function (d) { return !!d; });
-    for (let d = 0; d < dirs.length; d++) {
-      for (let i = 0; i < names.length; i++) {
-        candidates.push({ url: lyricsFileUrl(dirs[d] + '\\' + names[i]), label: dirs[d] + '\\' + names[i], local: true });
-      }
-    }
-  }
   const token = ++LYRICS.loadToken;
   LYRICS.status = 'loading'; LYRICS.loadingSince = performance.now() / 1000;
   updateLyricsStatus();
+
+  const candidates = [];
   const fail = function () {
     if (token !== LYRICS.loadToken) return;
     const cached = usableTitle ? lyricsStoreGet(key) : '';
@@ -237,26 +316,52 @@ function attemptLyricsLoad(force) {
     if (CFG.onlineLyrics && usableTitle) { attemptOnlineLyrics(token); return; }
     setLyricsLines([], candidates.length ? 'error' : 'empty');
   };
-  if (!candidates.length) { fail(); return; }
-  let i = 0;
-  const tryNext = function () {
+  const beginLookup = function () {
     if (token !== LYRICS.loadToken) return;
-    if (i >= candidates.length) {
-      console.warn('LRC: no local lyric file matched, falling back to online', candidates.map(function (c) { return c.label; }));
-      fail(); return;
-    }
-    const c = candidates[i++];
-    fetchLyricsUrl(c.url, function (text) {
+    if (!candidates.length) { fail(); return; }
+    let i = 0;
+    const tryNext = function () {
       if (token !== LYRICS.loadToken) return;
-      if (text) {
-        LYRICS.source = c.label;
-        const parsed = parseLrc(text);
-        if (parsed.length) { LYRICS.rawText = text; if (usableTitle) lyricsStorePut(key, text); setLyricsLines(parsed, 'ready'); return; }
+      if (i >= candidates.length) {
+        console.warn('LRC: no local lyric file matched, falling back to online', candidates.map(function (c) { return c.label; }));
+        fail(); return;
       }
-      tryNext();
-    });
+      const c = candidates[i++];
+      fetchLyricsUrl(c.url, function (text) {
+        if (token !== LYRICS.loadToken) return;
+        // 纯音乐/占位文案不是歌词，别把它当命中
+        if (text && !lyricIsJunk(text)) {
+          LYRICS.source = c.label;
+          const parsed = parseLrc(text);
+          if (parsed.length) { LYRICS.rawText = text; if (usableTitle) lyricsStorePut(key, text); setLyricsLines(parsed, 'ready'); return; }
+        }
+        tryNext();
+      });
+    };
+    tryNext();
   };
-  tryNext();
+
+  if (LYRICS.explicitPath) {
+    candidates.push({ url: lyricsFileUrl(LYRICS.explicitPath), label: '手动 · ' + LYRICS.explicitPath, local: true });
+    beginLookup();
+  } else if (usableTitle) {
+    loadLyricsIndex(function (items) {
+      if (token !== LYRICS.loadToken) return;
+      const hit = lyricIndexMatch(items, title, artist, Number(MEDIA.duration) || 0);
+      if (hit && hit.j) {                    // 本地缓存明确写着「纯音乐」，就别再去网上抓同名错歌
+        LYRICS.source = '本地缓存 · 纯音乐';
+        setLyricsLines([], 'instrumental');
+        return;
+      }
+      if (hit && hit.f) {
+        candidates.push({ url: 'lyrics/' + encodeURIComponent(hit.f), label: '本地缓存 · ' + (hit.a ? hit.a + ' - ' : '') + hit.t, local: true });
+      }
+      pushNameCandidates(candidates, title, artist);
+      beginLookup();
+    });
+  } else {
+    beginLookup();
+  }
 }
 // 在线歌词：用 WE 给出的歌名/歌手去公开歌词库匹配，任何播放器（QQ音乐/网易云/Spotify）都适用
 const LYRICS_API = 'https://music-api.gdstudio.xyz/api.php';
@@ -269,6 +374,30 @@ function lyricKey(title, artist) {
   const strip = function (v) { return String(v || '').toLowerCase().replace(/[\s\-_·.,;:'"!?()（）\[\]【】&/、，。！？]/g, ''); };
   return strip(title) + '|' + strip(artist);
 }
+// 歌手比对（遇到过真实坑：搜「你像风一样出现 玉芬」，接口返回的全是「玉芬阿/DJ阿谭」
+// 的另一个版本，旧逻辑用「包含」判断把「玉芬阿」当成了「玉芬」，于是显示了另一首歌的词）
+// 规则：先按分隔符拆成歌手名，要么整名相等，要么两边都不少于 4 个字且互相包含
+function artistKeys(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/\b(?:feat|ft|with|vs)\.?\b/g, '/')
+    .split(/[\/,&、;；·|+]+|\s+/)
+    .map(function (v) { return v.replace(/[^0-9a-z\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g, ''); })
+    .filter(function (v) { return v.length > 0; });
+}
+function artistMatch(a, b) {
+  const ka = artistKeys(a), kb = artistKeys(b);
+  for (let i = 0; i < ka.length; i++) {
+    for (let j = 0; j < kb.length; j++) {
+      const x = ka[i], y = kb[j];
+      if (x === y) return true;
+      if (x.length >= 4 && y.length >= 4 && (x.indexOf(y) >= 0 || y.indexOf(x) >= 0)) return true;
+    }
+  }
+  return false;
+}
+// 合辑/原声带在歌词库里常被写成「群星」，这类歌手名不算有效比对依据
+const GENERIC_ARTIST = /^(群星|群星合唱|variousartists|va|未知|未知歌手|佚名|unknown|unknownartist)$/;
 // 统一带超时的 JSON 请求：WE 的 CEF 里请求有可能长时间挂着，没有超时就会一直停在“读取中”
 function fetchJson(url, onDone) {
   let settled = false, timer = null, ctrl = null;
@@ -305,7 +434,7 @@ function fetchJson(url, onDone) {
   xhr.onabort = function () { finish(null); };
   try { xhr.send(); } catch (e) { finish(null); }
 }
-function scoreLyricHit(it, wantTitle, wantArtist) {
+function scoreLyricHit(it, wantTitle, wantArtist, wantDuration, wantArtistRaw) {
   const itArtist = Array.isArray(it.artist) ? it.artist.join(' ') : (it.artist || '');
   const nameKey = lyricKey(it.name, '').split('|')[0];
   const artistKey = lyricKey('', itArtist).split('|')[1];
@@ -314,10 +443,44 @@ function scoreLyricHit(it, wantTitle, wantArtist) {
   else if (nameKey && wantTitle && (nameKey.indexOf(wantTitle) >= 0 || wantTitle.indexOf(nameKey) >= 0)) score += 2;
   // 网易云搜索经常把翻唱排在前面（原唱根本不在结果里），所以歌手权重最高；
   // 退一步，标题里写着「原唱 周杰伦」的翻唱也基本沿用原词，也算命中
-  if (wantArtist && artistKey && (artistKey.indexOf(wantArtist) >= 0 || wantArtist.indexOf(artistKey) >= 0)) score += 4;
+  if (wantArtist && artistKey && artistMatch(itArtist, wantArtistRaw || wantArtist)) score += 4;
   else if (wantArtist && nameKey && nameKey.indexOf(wantArtist) >= 0) score += 2;
   else if (wantArtist) score -= 1;
+  const dur = hitDurationSec(it);
+  if (wantDuration > 15 && dur > 15) {
+    const diff = Math.abs(dur - wantDuration);
+    if (diff <= 3) score += 4;
+    else if (diff <= 8) score += 1;
+    else score -= 2;
+  }
   return score;
+}
+// 接口里的时长（秒）：网易云风格会给毫秒的 interval，两种都认
+function hitDurationSec(it) {
+  const sec = Number(it.duration);
+  if (Number.isFinite(sec) && sec > 0) return sec;
+  const ms = Number(it.interval);
+  if (Number.isFinite(ms) && ms > 0) return ms / 1000;
+  return 0;
+}
+// 硬门槛：歌名必须对得上；歌手和时长至少有一项能对上。
+// 这条是「宁可没词，也不显示另一首歌」的底线 —— 同名不同曲就是这么串掉的
+function lyricHitPlausible(it, wantTitle, wantArtist, wantDuration, wantArtistRaw) {
+  const itArtist = Array.isArray(it.artist) ? it.artist.join(' ') : (it.artist || '');
+  const nameKey = lyricKey(it.name, '').split('|')[0];
+  if (!nameKey || !wantTitle) return false;
+  const titleExact = nameKey === wantTitle;
+  if (!titleExact && nameKey.indexOf(wantTitle) < 0 && wantTitle.indexOf(nameKey) < 0) return false;
+  const artistKey = lyricKey('', itArtist).split('|')[1];
+  const artistOk = !!(wantArtist && artistKey && artistMatch(itArtist, wantArtistRaw || wantArtist));
+  const dur = hitDurationSec(it);
+  const durOk = wantDuration > 15 && dur > 15 && Math.abs(dur - wantDuration) <= 8;
+  // 合辑/OST 在歌词库里常写成「群星」，不能当歌手不符来处理，只认歌名完全一致
+  const generic = titleExact && GENERIC_ARTIST.test(artistKey);
+  if (wantArtist && dur > 15) return artistOk || durOk || generic;
+  if (wantArtist) return artistOk || generic;
+  if (dur > 15) return durOk;
+  return titleExact;         // 歌手和时长都没有可比信息时，只认歌名完全一致
 }
 // 「纯音乐，请欣赏 / 暂无歌词」这类不是歌词，命中要跳过，否则会顶掉真正的匹配
 function lyricIsJunk(text) {
@@ -367,6 +530,7 @@ function attemptOnlineLyrics(token) {
   const key = lyricKey(title, MEDIA.artist);
   const wantTitle = lyricKey(title, '').split('|')[0];
   const wantArtist = lyricKey('', MEDIA.artist).split('|')[1];
+  const wantDuration = Number(MEDIA.duration) || 0;
   const queries = lyricQueries(title, MEDIA.artist);
   let qi = 0, si = 0, lyricFetches = 0, searches = 0, onlyJunk = false;
   const giveUp = function () {
@@ -393,7 +557,10 @@ function attemptOnlineLyrics(token) {
       for (let i = 0; i < list.length; i++) {
         const it = list[i] || {};
         if (!it.lyric_id) continue;
-        ranked.push({ hit: it, score: scoreLyricHit(it, wantTitle, wantArtist) });
+        // 硬门槛先过一遍：歌名对不上、歌手和时长也都不符的条目直接丢掉，
+        // 不参与排序 —— 否则它会因为「先被枚举到」而上位，显示成另一首歌
+        if (!lyricHitPlausible(it, wantTitle, wantArtist, wantDuration, MEDIA.artist)) continue;
+        ranked.push({ hit: it, score: scoreLyricHit(it, wantTitle, wantArtist, wantDuration, MEDIA.artist) });
       }
       ranked.sort(function (a, b) { return b.score - a.score; });
       let ci = 0;
@@ -468,12 +635,48 @@ function lyricIndexAt(position) {
      所以曲率一定作用在文字上（不再只弯中间一小段）；
    · 画布不再做任何假弧 / 假缩放，弯与近大远小全部由 band.js 的曲面 + 透视算。
    ========================================================================== */
-const LYRICS_CANVAS_W = 2048, LYRICS_CANVAS_H = 512;
-const LYRICS_PPU = 72;                    // 画布像素 / 世界单位
+/* 画布的「基准」尺寸与密度。真正的当前值由 syncLyricsResolution() 按渲染分辨率
+   档位放大 —— 字的**世界尺寸**不变，只是每单位塞进更多像素，4K 下才不会糊。 */
+const LYRICS_BASE_W = 2048, LYRICS_BASE_H = 512, LYRICS_BASE_PPU = 72;
+let LYRICS_SCALE = 1;
+let LYRICS_CANVAS_W = LYRICS_BASE_W, LYRICS_CANVAS_H = LYRICS_BASE_H;
+let LYRICS_PPU = LYRICS_BASE_PPU;         // 画布像素 / 世界单位
+let LYRIC_EDGE_PX = 10;                   // 画布左右各留的像素，防止字形被裁
 const LYRIC_MARGIN = 1.07;                // 幕布比最长行宽 7%
-const LYRIC_TYPE = { active: 1.95, passive: 1.16 };   // 字高（世界单位，scale=1）
+const LYRIC_TYPE = { active: 1.60, passive: 0.95 };   // 字高（世界单位，scale=1）
+// 单行最大宽度（世界单位）。长句要缩字才放得下 —— 以前这个上限是「画布宽度」隐含给的
+// （2048px ÷ 72 = 28.4 单位），一句 20 多字的长歌词会铺掉半屏、字号滑块还调不动它，
+// 看起来就是「字体太大」。显式钉成 22 单位后，长句和短句都受同一个字号约束。
+const LYRIC_MAX_W = 22;
 const LYRIC_FONT = '"Segoe UI", "Microsoft YaHei", sans-serif';
-const LYRIC_EDGE_PX = 10;                 // 画布左右各留的像素，防止字形被裁
+
+// 渲染分辨率档位变了 → 换一张更密（或更疏）的画布。
+// 关键：所有排版量都按 PPU 换算，所以画布变大不会让字变大，屏幕上的效果完全一致。
+function syncLyricsResolution(ratio) {
+  // 量化到 0.25 一档：拖窗口时不会每帧重建画布
+  const k = Math.round(clamp(ratio || 1, 1, 2) * 4) / 4;
+  if (Math.abs(k - LYRICS_SCALE) < 0.01 && lyricsTexture) return;
+  LYRICS_SCALE = k;
+  LYRICS_CANVAS_W = Math.round(LYRICS_BASE_W * k);
+  LYRICS_CANVAS_H = Math.round(LYRICS_BASE_H * k);
+  LYRICS_PPU = LYRICS_BASE_PPU * k;
+  LYRIC_EDGE_PX = Math.round(10 * k);
+  LYRICS.bandW = 0;            // 宽度按新密度重新收敛（世界单位不变）
+  lyricsArcKey = '';
+  LYRICS.dirty = true;
+  if (!lyricsMesh) return;     // buildLyrics 还没跑，等它按新尺寸建画布
+  const canvas = document.createElement('canvas');
+  canvas.width = LYRICS_CANVAS_W; canvas.height = LYRICS_CANVAS_H;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.encoding = THREE.sRGBEncoding;
+  tex.minFilter = THREE.LinearFilter; tex.magFilter = THREE.LinearFilter;
+  tex.generateMipmaps = false;
+  tex.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
+  const old = lyricsTexture;
+  lyricsTexture = tex;
+  if (lyricsMaterial) { lyricsMaterial.map = tex; lyricsMaterial.needsUpdate = true; }
+  if (old) old.dispose();
+}
 
 function lyricMeasure(ctx, text, px, weight) {
   ctx.font = weight + ' ' + px.toFixed(2) + 'px ' + LYRIC_FONT;
@@ -527,7 +730,8 @@ function paintLyricsFrame(nowSec) {
     it.w = lyricMeasure(ctx, it.entry.text, it.px, it.weight);
     if (it.w > widest) widest = it.w;
   }
-  const room = canvas.width - LYRIC_EDGE_PX * 2;
+  // 量宽的上限：既要放得进画布，也不许超过 LYRIC_MAX_W 个世界单位
+  const room = Math.min(canvas.width - LYRIC_EDGE_PX * 2, LYRIC_MAX_W * LYRICS_PPU);
   const shrink = widest > room ? room / widest : 1;
   if (shrink < 1) {
     for (let i = 0; i < list.length; i++) {

@@ -1,2 +1,11 @@
 .workbuddy/
 comparison.jpg
+# WE 把工程误判成 Scene 时会往里编译 shader 缓存，不入库
+shaders/
+# 歌词同步产物：由 tools/sync-lyrics.js 从本机播放器缓存生成，不入库
+lyrics/*.lrc
+lyrics/_index.json
+lyrics/.sync-state.json
+# 无头渲染探针的临时文件
+_probe.*
+_shot.png
