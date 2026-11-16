@@ -84,6 +84,9 @@ function applyTheme() {
   const names = ['base1', 'base2', 'coolCore', 'coolEdge', 'warmCore', 'warmEdge', 'ripple', 'peak'];
   const uniforms = ['uBaseColor1', 'uBaseColor2', 'uCoolCore', 'uCoolEdge', 'uWarmCore', 'uWarmEdge', 'uRippleColor', 'uPeakColor'];
   for (let i = 0; i < names.length; i++) u[uniforms[i]].value.fromArray(th[names[i]]);
+  // 面板的环境光 / 镜面色 / 霾色都从主题推出来，换配色必须一起刷新，
+  // 否则湖面换了色、卡片还是旧主题的紫光，两块东西就不在一个世界里了
+  if (typeof syncPanelTheme === 'function') syncPanelTheme();
 }
 
 

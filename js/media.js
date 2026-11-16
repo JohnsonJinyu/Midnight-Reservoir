@@ -16,7 +16,9 @@ const MEDIA = {
   position: 0, duration: IN_WE ? 0 : 238, timelineStamp: 0,
   enabled: true, playbackSeen: false, propsSeen: false, lastPlayingAt: 0,
   gate: IN_WE ? 0 : 1, gateStamp: 0, gateHidden: false,
-  textKey: '', coverKey: '', coverToken: 0, textTransition: null, textDirty: false
+  textKey: '', coverKey: '', coverToken: 0, textTransition: null, textDirty: false,
+  // 屏幕的「光输出」：封面平均亮度与平均色，用来驱动光晕与边缘漏光（见 measureCoverLuminance）
+  coverLum: 0.34, lumSmooth: 0.34, lumStamp: 0
 };
 // —— 只在播放音乐时显示 ——
 // 视频软件（腾讯视频 / 爱奇艺 / B 站…）同样占用 Windows 的全局媒体会话，暂停之后仍旧把标题留在会话里，
@@ -64,11 +66,15 @@ function updateMediaGate(nowSec) {
   return MEDIA.gate;
 }
 
-let mediaGroup = null, mediaCoverTexture = null, mediaTextTexture = null, mediaAccentMaterial = null;
+let mediaGroup = null, mediaCoverTexture = null, mediaTextTexture = null;
 let mediaTextMesh = null, mediaTextMaterial = null, mediaProgressTrack = null, mediaProgressFill = null;
 let mediaCoverFade = null;
 let mediaParts = null, mediaAppliedScale = 0;
-// 由 gate 统一乘系数淡出的材质（封面、衬板、光晕、进度线）；文字与封面交叉淡化各自再乘一次
+// 面板（D1）：衬板 / 封面 / 歌名 / 换封面的交叉淡化层，四块共用同一个玻璃着色器
+let mediaPanelMaterial = null, mediaCoverMaterial = null, mediaFadeMaterial = null;
+// 面板外围：接触阴影（B1）与光晕（B2），都是贴着幕布曲面的贴片
+let mediaShadowMaterial = null, mediaHaloMaterial = null;
+// 由 gate 统一乘系数淡出的材质（面板、封面、光晕、进度线）；文字与封面交叉淡化各自再乘一次
 const mediaGateParts = [];
 let progressFillWidth = -1, progressTrackWidth = 0;
 // 待机信标：没音乐时替代整张专辑卡 —— 一颗极淡的呼吸光点，像湖对岸远处的一盏灯
@@ -84,14 +90,39 @@ function roundedCardShape(w, h, r) {
   return s;
 }
 function paintCoverFinish(ctx) {
+  // 这里只留一点点「斜向反光」的画布内提示：真正的菲涅尔反射现在由面板着色器算
+  // （跟着卡片起伏动、两端掠射变强），画布上再压一层重的高光会双重计算，反而假。
   ctx.save();
   ctx.globalCompositeOperation = 'screen';
   const sheen = ctx.createLinearGradient(0, 0, 768, 768);
-  sheen.addColorStop(0, 'rgba(255,255,255,0.20)'); sheen.addColorStop(0.28, 'rgba(255,255,255,0.055)');
-  sheen.addColorStop(0.48, 'rgba(255,255,255,0)'); sheen.addColorStop(1, 'rgba(255,255,255,0)');
+  sheen.addColorStop(0, 'rgba(255,255,255,0.085)'); sheen.addColorStop(0.30, 'rgba(255,255,255,0.022)');
+  sheen.addColorStop(0.50, 'rgba(255,255,255,0)'); sheen.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = sheen; ctx.fillRect(0, 0, 768, 768);
   ctx.restore();
-  ctx.strokeStyle = 'rgba(255,235,255,0.30)'; ctx.lineWidth = 4; ctx.strokeRect(3, 3, 762, 762);
+  measureCoverLuminance();
+}
+/* 屏幕发出的光有多少 —— 物理上「面板照亮周围空气」的辐照度正比于它的平均辐射亮度，
+   所以一张亮封面自带更大的光晕，一张暗封面几乎不照亮周围。
+   每首歌只算一次：先缩到 32×32 再读像素，代价可以忽略。 */
+let coverProbe = null;
+function measureCoverLuminance() {
+  if (!mediaCoverTexture || !mediaCoverTexture.image) return;
+  if (!coverProbe) { coverProbe = document.createElement('canvas'); coverProbe.width = 32; coverProbe.height = 32; }
+  const pctx = coverProbe.getContext('2d');
+  let lum = MEDIA.coverLum;
+  try {
+    pctx.clearRect(0, 0, 32, 32);
+    pctx.drawImage(mediaCoverTexture.image, 0, 0, 32, 32);
+    const data = pctx.getImageData(0, 0, 32, 32).data;
+    let r = 0, g = 0, b = 0;
+    for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; }
+    const n = data.length / 4;
+    // Rec.709 亮度：人眼对绿最敏感、对蓝最不敏感，直接取 RGB 平均会高估蓝光的「亮度」
+    lum = clamp01((0.2126 * r + 0.7152 * g + 0.0722 * b) / (n * 255));
+  } catch (e) {
+    // getImageData 被安全策略拦下时保留上一次的值，不影响渲染
+  }
+  MEDIA.coverLum = lum;
 }
 function paintFallbackCover() {
   if (!mediaCoverTexture) return;
@@ -149,7 +180,7 @@ function setMediaCover(src) {
     }
     drawLoadedCover(mediaCoverFade.texture.image.getContext('2d'), image);
     mediaCoverFade.texture.needsUpdate = true;
-    mediaCoverFade.material.opacity = 0;
+    setPanelOpacity(mediaCoverFade.material, 0);
     mediaCoverFade.mesh.visible = true;
     mediaCoverFade.active = true;
     mediaCoverFade.started = performance.now() / 1000;
@@ -166,12 +197,13 @@ function updateCoverFade(nowSec) {
   if (!mediaCoverFade || !mediaCoverFade.active) return;
   const t = clamp01((nowSec - mediaCoverFade.started) / 0.55);
   const eased = t * t * (3 - 2 * t);
-  mediaCoverFade.material.opacity = eased * MEDIA.gate;
+  setPanelOpacity(mediaCoverFade.material, eased * MEDIA.gate);
   if (t >= 1) {
     const ctx = mediaCoverTexture.image.getContext('2d');
     ctx.clearRect(0, 0, 768, 768);
     ctx.drawImage(mediaCoverFade.texture.image, 0, 0);
     mediaCoverTexture.needsUpdate = true;
+    measureCoverLuminance();     // 交叉淡化结束，屏幕真正发出来的光才是新封面的
     mediaCoverFade.mesh.visible = false;
     mediaCoverFade.active = false;
   }
@@ -260,12 +292,12 @@ function updateMediaTextTransition(nowSec) {
   }
   const tr = MEDIA.textTransition;
   if (!tr) {
-    mediaTextMaterial.opacity = MEDIA.gate;
+    setPanelOpacity(mediaTextMaterial, MEDIA.gate);
     return;
   }
   const elapsed = nowSec - tr.started;
   if (tr.phase === 'out') {
-    mediaTextMaterial.opacity = clamp01(1 - elapsed / 0.13) * MEDIA.gate;
+    setPanelOpacity(mediaTextMaterial, clamp01(1 - elapsed / 0.13) * MEDIA.gate);
     if (elapsed >= 0.13) {
       paintMediaText();
       tr.phase = 'in'; tr.started = nowSec;
@@ -273,109 +305,156 @@ function updateMediaTextTransition(nowSec) {
   } else {
     const t = clamp01(elapsed / 0.34);
     const eased = 1 - Math.pow(1 - t, 3);
-    mediaTextMaterial.opacity = eased * MEDIA.gate;
-    if (t >= 1) { MEDIA.textTransition = null; mediaTextMaterial.opacity = MEDIA.gate; }
+    setPanelOpacity(mediaTextMaterial, eased * MEDIA.gate);
+    if (t >= 1) { MEDIA.textTransition = null; setPanelOpacity(mediaTextMaterial, MEDIA.gate); }
   }
 }
 function buildMediaCard() {
   mediaGroup = new THREE.Group();
-  mediaGroup.name = 'Curved album band';
-  const R = BAND_RADIUS, FS = THREE.FrontSide;
-  // 封面衬板：位于封面背后一点，形成幕布上的一圈暗色边框
-  const backing = new THREE.Mesh(
-    new THREE.BufferGeometry(),
-    new THREE.MeshBasicMaterial({ color: 0x231433, side: FS, transparent: true, opacity: 0.92 })
-  );
-  backing.renderOrder = 1; mediaGroup.add(backing);
+  mediaGroup.name = 'Unified curved media panel';
+  const FS = THREE.FrontSide, DS = THREE.DoubleSide;
+
+  /* ① 接触阴影（B1）
+     面板挡住了它背后幕布的光，所以外围一圈更暗。但影子内部不是纯黑 ——
+     环境光会从四周回弹进来，所以用近黑带紫，而不是 #000（纯黑会像挖了个洞）。 */
+  mediaShadowMaterial = makeAuraMaterial({
+    color: 0x06020e, strength: 0.65, spread: 0.46, falloff: 0.9,
+    blending: THREE.NormalBlending, side: DS
+  });
+  const shadow = new THREE.Mesh(new THREE.BufferGeometry(), mediaShadowMaterial);
+  shadow.renderOrder = 0; mediaGroup.add(shadow);
+
+  /* ② 光晕（B2）
+     以前是一张 Sprite —— 永远正对相机的平面，贴在半径 41.4 处，跟曲面没关系。
+     现在改成贴着幕布曲面的一片：光跟着弧面铺开、随面板起伏一起动。
+     强度由封面平均亮度驱动，颜色取 WE 提取的主色（见 updateMediaCard）。 */
+  mediaHaloMaterial = makeAuraMaterial({
+    color: MEDIA.primaryColor, strength: 0.20, spread: 0.78, falloff: 1.7, side: DS
+  });
+  const halo = new THREE.Mesh(new THREE.BufferGeometry(), mediaHaloMaterial);
+  halo.renderOrder = 1; mediaGroup.add(halo);
+
+  /* ③ 面板本体（D1）
+     封面 / 歌名 / 进度线现在共用同一块玻璃：一整块衬板 + 一圈圆角 + 一圈边缘漏光。
+     不再是「封面背后一个小衬板、右边飘着一段文字」两张皮。 */
+  mediaPanelMaterial = makePanelMaterial({
+    emission: 0x120a1e, ambientGain: 1.55, rim: MEDIA.primaryColor, rimGain: 0.16,
+    scanRows: 96, scanStrength: 0.020, side: DS, opacity: 0
+  });
+  const panel = new THREE.Mesh(new THREE.BufferGeometry(), mediaPanelMaterial);
+  panel.renderOrder = 2; mediaGroup.add(panel);
+
   const coverCanvas = document.createElement('canvas'); coverCanvas.width = 768; coverCanvas.height = 768;
   // 幕布是正面朝向相机的曲面（不是圆柱内壁），纹理按 UV 正常映射，不能再做 X 翻转
   mediaCoverTexture = new THREE.CanvasTexture(coverCanvas); mediaCoverTexture.encoding = THREE.sRGBEncoding;
   mediaCoverTexture.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
-  const cover = new THREE.Mesh(
-    new THREE.BufferGeometry(),
-    new THREE.MeshBasicMaterial({ map: mediaCoverTexture, side: FS, toneMapped: false, transparent: true, opacity: 1 })
-  );
-  cover.renderOrder = 2; mediaGroup.add(cover);
-  // 极淡的环境光晕：让封面像被远处灯光照亮，而不是贴在黑场上的贴纸
-  const haloCanvas = document.createElement('canvas'); haloCanvas.width = 256; haloCanvas.height = 256;
-  const hctx = haloCanvas.getContext('2d');
-  const hg = hctx.createRadialGradient(128, 128, 0, 128, 128, 128);
-  hg.addColorStop(0, 'rgba(146,102,214,0.62)');
-  hg.addColorStop(0.42, 'rgba(116,78,186,0.26)');
-  hg.addColorStop(0.72, 'rgba(88,56,150,0.08)');
-  hg.addColorStop(1, 'rgba(70,44,120,0)');
-  hctx.fillStyle = hg; hctx.fillRect(0, 0, 256, 256);
-  const haloTexture = new THREE.CanvasTexture(haloCanvas); haloTexture.encoding = THREE.sRGBEncoding;
-  const halo = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: haloTexture, transparent: true, opacity: 0.55, depthWrite: false,
-    blending: THREE.AdditiveBlending, toneMapped: false
-  }));
-  halo.renderOrder = 0; mediaGroup.add(halo);
-  // 换封面时的交叉淡化层（贴在封面正前方一点）
+  mediaCoverMaterial = makePanelMaterial({
+    map: mediaCoverTexture, ambientGain: 1.30, glassLoss: 0.90, gain: 1.04,
+    scanRows: 64, scanStrength: 0.012, side: FS, opacity: 0
+  });
+  const cover = new THREE.Mesh(new THREE.BufferGeometry(), mediaCoverMaterial);
+  cover.renderOrder = 3; mediaGroup.add(cover);
+
+  // 换封面时的交叉淡化层（贴在封面正前方一点，与封面同一套玻璃参数）
   const fadeCanvas = document.createElement('canvas'); fadeCanvas.width = 768; fadeCanvas.height = 768;
   const fadeTexture = new THREE.CanvasTexture(fadeCanvas); fadeTexture.encoding = THREE.sRGBEncoding;
-  const fadeMaterial = new THREE.MeshBasicMaterial({ map: fadeTexture, transparent: true, opacity: 0, depthWrite: false, toneMapped: false, side: FS });
-  const fadeMesh = new THREE.Mesh(new THREE.BufferGeometry(), fadeMaterial);
+  mediaFadeMaterial = makePanelMaterial({
+    map: fadeTexture, ambientGain: 1.30, glassLoss: 0.90, gain: 1.04,
+    scanRows: 64, scanStrength: 0.012, side: FS, opacity: 0
+  });
+  const fadeMesh = new THREE.Mesh(new THREE.BufferGeometry(), mediaFadeMaterial);
   fadeMesh.renderOrder = 4; fadeMesh.visible = false; mediaGroup.add(fadeMesh);
-  mediaCoverFade = { texture: fadeTexture, material: fadeMaterial, mesh: fadeMesh, active: false, started: 0 };
-  // 歌名文字：同一块幕布上的另一块补丁，位于封面右侧
+  mediaCoverFade = { texture: fadeTexture, material: mediaFadeMaterial, mesh: fadeMesh, active: false, started: 0 };
+
+  // 歌名文字：同一块面板上的另一块补丁，位于封面右侧。玻璃参数比封面弱 ——
+  // 文字是「隔着玻璃看的字」，不该像封面那样被掠射压暗
   const textCanvas = document.createElement('canvas'); textCanvas.width = 1400; textCanvas.height = 540;
   mediaTextTexture = new THREE.CanvasTexture(textCanvas); mediaTextTexture.encoding = THREE.sRGBEncoding;
   mediaTextTexture.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
-  mediaTextMaterial = new THREE.MeshBasicMaterial({
-    map: mediaTextTexture, transparent: true, alphaTest: 0.01, depthWrite: false, toneMapped: false, side: FS
+  mediaTextMaterial = makePanelMaterial({
+    map: mediaTextTexture, ambientGain: 1.15, glassLoss: 0.55, f0: 0.03,
+    shape: false, scanRows: 64, scanStrength: 0.018, side: FS, opacity: 0
   });
   mediaTextMesh = new THREE.Mesh(new THREE.BufferGeometry(), mediaTextMaterial);
-  mediaTextMesh.renderOrder = 3; mediaGroup.add(mediaTextMesh);
-  // 播放进度线：贴在文字块下沿的两条细带
+  mediaTextMesh.renderOrder = 5; mediaGroup.add(mediaTextMesh);
+
+  // 播放进度线：贴在文字块下沿的两条细带（自发光，走普通材质）
   mediaProgressTrack = new THREE.Mesh(
     new THREE.BufferGeometry(),
     new THREE.MeshBasicMaterial({ color: 0xd8c3eb, transparent: true, opacity: 0.16, depthWrite: false, side: FS })
   );
-  mediaProgressTrack.renderOrder = 5; mediaGroup.add(mediaProgressTrack);
+  mediaProgressTrack.renderOrder = 6; mediaGroup.add(mediaProgressTrack);
   mediaProgressFill = new THREE.Mesh(
     new THREE.BufferGeometry(),
     new THREE.MeshBasicMaterial({ color: MEDIA.primaryColor, transparent: true, opacity: 0.88, depthWrite: false, side: FS })
   );
-  mediaProgressFill.renderOrder = 6; mediaGroup.add(mediaProgressFill);
-  mediaAccentMaterial = new THREE.MeshBasicMaterial({ color: MEDIA.primaryColor, transparent: true, opacity: 0.72 });
-  mediaParts = { backing: backing, cover: cover, fade: fadeMesh, text: mediaTextMesh, track: mediaProgressTrack, fill: mediaProgressFill, halo: halo };
+  mediaProgressFill.renderOrder = 7; mediaGroup.add(mediaProgressFill);
+
+  mediaParts = {
+    panel: panel, cover: cover, fade: fadeMesh, text: mediaTextMesh,
+    track: mediaProgressTrack, fill: mediaProgressFill, halo: halo, shadow: shadow
+  };
   mediaGateParts.length = 0;
-  mediaGateParts.push({ mat: backing.material, base: 0.92 });
-  mediaGateParts.push({ mat: cover.material, base: 1 });
-  mediaGateParts.push({ mat: halo.material, base: 0.55 });
+  mediaGateParts.push({ mat: mediaShadowMaterial, base: 1 });
+  mediaGateParts.push({ mat: mediaHaloMaterial, base: 1 });
+  mediaGateParts.push({ mat: mediaPanelMaterial, base: 0.97 });
+  mediaGateParts.push({ mat: mediaCoverMaterial, base: 1 });
   mediaGateParts.push({ mat: mediaProgressTrack.material, base: 0.16 });
   mediaGateParts.push({ mat: mediaProgressFill.material, base: 0.88 });
+  applyMediaAccent();
   applyMediaScale(CFG.mediaScale);
   camera.add(mediaGroup); scene.add(camera);
   paintFallbackCover(); paintMediaText(); setMediaCover(MEDIA.thumbnail);
+}
+// 主色（WE 从封面提取）→ 边缘漏光与光晕的颜色：屏幕外侧那圈光就该是屏幕自己的颜色
+function applyMediaAccent() {
+  const c = MEDIA.primaryColor || '#b18ae8';
+  if (mediaHaloMaterial) mediaHaloMaterial.panelUniforms.uColor.value.set(c);
+  if (mediaPanelMaterial) mediaPanelMaterial.panelUniforms.uRimColor.value.set(c);
 }
 // 同一块幕布上的整体缩放：宽度、高度、位置都按比例走，曲率由幕布统一决定，
 // 所以放大缩小只改变「占多大一块」，不会顺带改变弯度
 function applyMediaScale(scale) {
   if (!mediaParts) return;
-  const s = clamp(scale, 0.3, 1.6), R = BAND_RADIUS;
-  const coverH = 7.0 * s, coverW = coverH;        // 正方形封面：弦长 = 高度
-  const pad = 0.55 * s;                           // 衬板留白按世界尺寸取，横竖一致
-  const textW = 0.46 * R * s, textH = textW * 540 / 1400;
-  // 封面中心保持原来的位置（屏幕中轴），歌名向右延展——与旧构图一致；
-  // 右侧会自然略微「近」一点（透视），这正是同一块弯曲幕布该有的表现
-  const gap = 3.3 * s;
-  const coverCx = 0;
-  const textCx = coverCx + coverW * 0.5 + gap + textW * 0.5;
+  const s = clamp(scale, 0.3, 1.6);
   const p = mediaParts;
+  const coverH = 7.0 * s, coverW = coverH;         // 正方形封面：弦长 = 高度
+  const pad = 0.44 * s;                            // 面板内边距（统一面板不需要大留白）
+  const gap = 1.00 * s;                            // 封面与文字之间的分隔
+  const textW = 0.46 * BAND_RADIUS * s, textH = textW * 540 / 1400;
+  const panelW = pad * 2 + coverW + gap + textW;
+  const panelH = Math.max(coverH, textH) + pad * 2;
+  const panelR = 0.16;                             // 圆角半径（以面板高归一）
+  const aspect = panelW / panelH;
+  // 整块面板居中：封面不再钉在屏幕中轴（那是「卡片 + 飘字」的旧构图），
+  // 现在它是一块完整的屏，居中才像一件摆在那里、被湖光照着的实体
+  const coverCx = -panelW * 0.5 + pad + coverW * 0.5;
+  const textCx = coverCx + coverW * 0.5 + gap + textW * 0.5;
   const setGeo = function (mesh, geo) { mesh.geometry.dispose(); mesh.geometry = geo; };
   p.coverCx = coverCx; p.textCx = textCx;
-  // 整张卡片的每一块都传同一个 CARD_REF_WIDTH：封面、衬板、歌名、进度线弯度一致
-  setGeo(p.backing, bandPatchGeometry(coverCx, coverW + pad * 2, coverH + pad * 2, -0.5, 32, CARD_REF_WIDTH));
-  setGeo(p.cover, bandPatchGeometry(coverCx, coverW, coverH, 0, 32, CARD_REF_WIDTH));
-  if (p.halo) {
-    const haloSize = coverH * 2.6;
-    p.halo.scale.set(haloSize, haloSize, 1);
-    p.halo.position.set(coverCx, 0, -(R + 1.4));
-  }
-  setGeo(p.fade, bandPatchGeometry(coverCx, coverW, Math.max(0.4, coverH - 0.06 * s), 0.06, 32, CARD_REF_WIDTH));
-  setGeo(p.text, bandPatchGeometry(textCx, textW, textH, 0.08, 48, CARD_REF_WIDTH));
+
+  // 面板（D1）：一整块玻璃。圆角与边缘漏光都由着色器按 SDF 切，不靠几何描边，
+  // 所以放大到 160% 也不会出现「边框跟着变粗」的像素感
+  setGeo(p.panel, bandPatchGeometry(0, panelW, panelH, -0.05, 48, CARD_REF_WIDTH));
+  setPanelShape(mediaPanelMaterial, aspect, panelR);
+
+  setGeo(p.cover, bandPatchGeometry(coverCx, coverW, coverH, 0.02, 32, CARD_REF_WIDTH));
+  setPanelShape(mediaCoverMaterial, 1, 0.10);
+  setGeo(p.fade, bandPatchGeometry(coverCx, coverW, coverH, 0.05, 32, CARD_REF_WIDTH));
+  setPanelShape(mediaFadeMaterial, 1, 0.10);
+  setGeo(p.text, bandPatchGeometry(textCx, textW, textH, 0.02, 48, CARD_REF_WIDTH));
+
+  // 阴影 / 光晕：比面板大 k 倍的同形贴片，贴在同一曲面上（所以会跟着弯）。
+  // 把 k 交给着色器，它先把 uv 除回面板坐标系再算 SDF —— 这样贴片放多大，
+  // 光晕的形状还是「面板的形状向外扩散」，而不是一块矩形
+  const shadowK = 2.6;
+  setGeo(p.shadow, bandPatchGeometry(0, panelW * shadowK, panelH * shadowK, -0.42, 48, CARD_REF_WIDTH));
+  setAuraShape(mediaShadowMaterial, aspect, panelR, shadowK);
+  const haloK = 3.6;
+  setGeo(p.halo, bandPatchGeometry(0, panelW * haloK, panelH * haloK, -0.26, 48, CARD_REF_WIDTH));
+  setAuraShape(mediaHaloMaterial, aspect, panelR, haloK);
+
+  p.panelW = panelW; p.panelH = panelH; p.aspect = aspect;
   p.textW = textW; p.textH = textH;
   p.trackLeft = textCx - textW * 0.5;
   // 进度线放在歌手名下方一点（画布 y≈300/540），不会和底部小字打架
@@ -425,8 +504,18 @@ function updateMediaCard(nowSec) {
   // 收起/展开时整体淡出：视频会话、暂停状态都由 gate 统一收起来，不再突然消失
   for (let i = 0; i < mediaGateParts.length; i++) {
     const part = mediaGateParts[i];
-    part.mat.opacity = part.base * gate;
+    setPanelOpacity(part.mat, part.base * gate);
   }
+  // 屏幕亮 → 周围更亮。物理上面板照亮环境的辐照度正比于它的平均辐射亮度，
+  // 所以光晕强度和边缘漏光都跟着封面平均亮度走；慢速跟随，换歌时不会「啪」地跳一下。
+  // 用时间常数而不是「每帧乘一个系数」：掉帧时跟随速度也一样，换歌不会因为
+  // 帧率高低出现「有时瞬间跳、有时慢半拍」
+  const lumDt = MEDIA.lumStamp ? clamp(nowSec - MEDIA.lumStamp, 0, 0.25) : 0;
+  MEDIA.lumStamp = nowSec;
+  if (lumDt > 0) MEDIA.lumSmooth += (MEDIA.coverLum - MEDIA.lumSmooth) * (1 - Math.pow(0.02, lumDt / 0.6));
+  const screenLum = clamp01(MEDIA.lumSmooth);
+  if (mediaHaloMaterial) mediaHaloMaterial.panelUniforms.uStrength.value = 0.05 + 0.34 * screenLum;
+  if (mediaPanelMaterial) mediaPanelMaterial.panelUniforms.uRim.value = 0.06 + 0.30 * screenLum;
   const viewHeight = bandViewHeight();
   const viewWidth = viewHeight * camera.aspect;
   const fit = Math.min(1, viewWidth / 21);
@@ -550,7 +639,7 @@ function setupMediaIntegration() {
       MEDIA.thumbnail = p.thumbnail || '';
       if (p.primaryColor) {
         MEDIA.primaryColor = p.primaryColor;
-        if (mediaAccentMaterial) mediaAccentMaterial.color.set(p.primaryColor);
+        applyMediaAccent();
         if (mediaProgressFill) mediaProgressFill.material.color.set(p.primaryColor);
       }
       setMediaCover(MEDIA.thumbnail);

@@ -677,7 +677,7 @@ function syncLyricsResolution(ratio) {
   tex.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
   const old = lyricsTexture;
   lyricsTexture = tex;
-  if (lyricsMaterial) { lyricsMaterial.map = tex; lyricsMaterial.needsUpdate = true; }
+  if (lyricsMaterial) { lyricsMaterial.panelUniforms.uMap.value = tex; lyricsMaterial.needsUpdate = true; }
   if (old) old.dispose();
 }
 
@@ -807,9 +807,13 @@ function buildLyrics() {
   lyricsTexture.minFilter = THREE.LinearFilter; lyricsTexture.magFilter = THREE.LinearFilter;
   lyricsTexture.generateMipmaps = false;
   lyricsTexture.anisotropy = Math.min(4, renderer.capabilities.getMaxAnisotropy());
-  lyricsMaterial = new THREE.MeshBasicMaterial({
-    map: lyricsTexture, transparent: true, alphaTest: 0.005, depthWrite: false, toneMapped: false,
-    side: THREE.DoubleSide
+  // 歌词和专辑卡走同一个玻璃着色器：黑位抬升、菲涅尔、像素栅格都一致，
+  // 两块内容摆在同一画面里才不会一个像玻璃屏、一个像贴纸。
+  // 但玻璃损失压到 0.5 —— 歌词是「隔着一层薄玻璃看的发光字」，
+  // 掠射时不该像封面那样被压暗，只留一点点边缘偏冷。
+  lyricsMaterial = makePanelMaterial({
+    map: lyricsTexture, ambientGain: 1.10, glassLoss: 0.50, f0: 0.03,
+    shape: false, scanRows: 48, scanStrength: 0.016, side: THREE.DoubleSide
   });
   if (!LYRICS.bandW) LYRICS.bandW = 18;
   lyricsMesh = new THREE.Mesh(buildLyricsMeshGeometry(), lyricsMaterial);
@@ -823,7 +827,7 @@ function updateLyrics(nowSec) {
   const available = CFG.showLyrics && LYRICS.lines.length > 0 && MEDIA.gate > 0.004;
   lyricsGroup.visible = available;
   if (!available) return;
-  if (lyricsMaterial) lyricsMaterial.opacity = MEDIA.gate;
+  if (lyricsMaterial) setPanelOpacity(lyricsMaterial, MEDIA.gate);
   const viewHeight = bandViewHeight();
   const nextIndex = lyricIndexAt(mediaPlaybackPosition(nowSec));
   if (!LYRICS.initialized) {

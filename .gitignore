@@ -9,3 +9,4 @@ lyrics/.sync-state.json
 # 无头渲染探针的临时文件
 _probe*
 _shot*.png
+_crop*.png

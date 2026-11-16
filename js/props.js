@@ -45,7 +45,10 @@ window.wallpaperPropertyListener = {
     if (p.cameraazimuth) CFG.cameraAzimuth = Number(p.cameraazimuth.value);
     if (p.cameradistance) CFG.cameraDistance = Number(p.cameradistance.value);
     if (p.camerafov) CFG.cameraFov = Number(p.camerafov.value);
-    if (p.rangepct) CFG.range = propScaled(p.rangepct.value, 100, 0.8, 1.4, CFG.range);
+    if (p.rangepct) {
+      CFG.range = propScaled(p.rangepct.value, 100, 0.8, 1.4, CFG.range);
+      if (typeof syncPanelTheme === 'function') syncPanelTheme();   // 雾的距离基准跟着变
+    }
     if (p.renderscale) {
       // combo 传字符串（"0.75" / "1" / "1.25"…），解析失败就保持原值
       const nextScale = clamp(propNum(p.renderscale.value, CFG.renderScale), 0.75, 2);

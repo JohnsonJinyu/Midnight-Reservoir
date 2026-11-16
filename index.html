@@ -36,8 +36,8 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 <script src="three.min.js"></script>
 <!-- 加载顺序 = 依赖顺序，每个文件只负责一层（见各文件头部说明）：
        core 共享状态/常量 → audio 音频分析 → band 幕布曲面 → media 专辑卡
-       → lyrics 歌词 → shaders GLSL 源码 → lake 场景与绘制 → props 属性接线
-       → app 启动与主循环
+       → lyrics 歌词 → shaders GLSL 源码 → panel 玻璃材质工厂 → lake 场景与绘制
+       → props 属性接线 → app 启动与主循环
      文件之间是普通 <script> 全局作用域，不用 ES Module（file:// 下 import 会被 CORS 拦）。 -->
 <script src="js/core.js"></script>
 <script src="js/audio.js"></script>
@@ -45,6 +45,7 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 <script src="js/media.js"></script>
 <script src="js/lyrics.js"></script>
 <script src="js/shaders.js"></script>
+<script src="js/panel.js"></script>
 <script src="js/lake.js"></script>
 <script src="js/props.js"></script>
 <script src="app.js"></script>
