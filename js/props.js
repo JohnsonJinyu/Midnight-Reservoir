@@ -69,6 +69,7 @@ window.wallpaperPropertyListener = {
   if (p.mediatitlescalepct) { CFG.titleScale = propScaled(p.mediatitlescalepct.value, 100, 0.7, 1.3, CFG.titleScale); refreshMediaText(); }
   if (p.showlyrics) CFG.showLyrics = !!p.showlyrics.value;
   if (p.lyricsscalepct) { CFG.lyricsScale = propScaled(p.lyricsscalepct.value, 100, 0.6, 1.3, CFG.lyricsScale); LYRICS.dirty = true; }
+  if (p.lyricsgappct) { CFG.lyricsGap = propScaled(p.lyricsgappct.value, 100, 0.7, 1.8, CFG.lyricsGap); LYRICS.dirty = true; }
   if (p.lyricsyx10) CFG.lyricsY = propScaled(p.lyricsyx10.value, 10, -8, 8, CFG.lyricsY);
   if (p.lyricscurvepct) {
     CFG.lyricsCurve = propScaled(p.lyricscurvepct.value, 100, 0, 2, CFG.lyricsCurve);
@@ -87,7 +88,6 @@ window.wallpaperPropertyListener = {
     const okNum = /^[+-]?\d+(?:\.\d+)?$/.test(raw);
     CFG.lyricsOffset = okNum ? clamp(Math.round(parseFloat(raw)), -2000, 2000) : 0;
   }
-  if (p.onlinelyrics) { CFG.onlineLyrics = !!p.onlinelyrics.value; if (!LYRICS.lines.length) attemptLyricsLoad(); }
   if (p.hidecredits) {
     const next = !!p.hidecredits.value;
     if (next !== CFG.hideCredits) { CFG.hideCredits = next; reparseLyrics(); }
@@ -117,7 +117,7 @@ function bindRange(id, key, out, fix, scale) {
     CFG[key] = v;
     if (o) o.textContent = fix === 0 ? String(Math.round(v)) : v.toFixed(fix);
     if (key === 'lyricsCurve') { updateLyricsGeometry(); LYRICS.dirty = true; }
-    if (key === 'lyricsScale') LYRICS.dirty = true;
+    if (key === 'lyricsScale' || key === 'lyricsGap') LYRICS.dirty = true;
     if (key === 'titleScale') refreshMediaText();
   });
 }
@@ -143,6 +143,7 @@ function bindUI() {
   bindRange('mediay', 'mediaY', 'v_mediay', 1, 10);
   bindRange('mediatitlescale', 'titleScale', 'v_titlescale', 2, 100);
   bindRange('lyricsscale', 'lyricsScale', 'v_lyricsscale', 2, 100);
+  bindRange('lyricsgap', 'lyricsGap', 'v_lyricsgap', 2, 100);
   bindRange('lyricsy', 'lyricsY', 'v_lyricsy', 1, 10);
   bindRange('lyricscurve', 'lyricsCurve', 'v_lyricscurve', 2, 100);
   bindRange('lyricsorbit', 'lyricsOrbit', 'v_lyricsorbit', 0);

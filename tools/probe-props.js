@@ -19,7 +19,7 @@ function makeCtx() {
     showMedia: true, musicOnly: true, idleMark: true,
     mediaScale: 0.6, mediaOrbit: -10, mediaY: 1.2, titleScale: 1,
     showLyrics: true, lyricsScale: 0.9, lyricsY: 0, lyricsCurve: 1, lyricsOrbit: 0,
-    lyricsOffset: 0, onlineLyrics: true, hideCredits: true, lyricsDebug: false, lyricsDir: '',
+    lyricsOffset: 0, hideCredits: true, lyricsDebug: false, lyricsDir: '',
     fps: 60, fpsGlobal: 0
   };
   const LYRICS = { dirty: false, lines: [], explicitPath: '' };

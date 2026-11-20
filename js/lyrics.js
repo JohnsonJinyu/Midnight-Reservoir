@@ -3,8 +3,8 @@
 /* ============================================================================
    lyrics.js —— 歌词：加载、解析、排版、贴到幕布上
    ----------------------------------------------------------------------------
-   职责：本地 LRC / 在线歌词的获取与缓存、逐句时间轴、双行排版与换句动画、
-        把画布贴到 band.js 的曲面上。
+   职责：本地 LRC 的获取与缓存、逐句时间轴、双行排版与换句动画、
+        把画布贴到 band.js 的曲面上。纯本地——不依赖任何在线歌词服务。
    排版契约：字号以「世界单位」定义（LYRIC_TYPE），画布像素只是换算结果 ——
         这样画布分辨率再变，屏幕上的字也不会莫名其妙变小。
    ========================================================================== */
@@ -23,7 +23,9 @@ const LYRICS = {
   lines: IN_WE ? [] : DEMO_LYRICS.slice(), source: IN_WE ? '' : 'browser-demo',
   index: -1, transition: null, dirty: true, loadToken: 0, status: IN_WE ? 'empty' : 'demo',
   explicitPath: '', requestKey: '', loadingSince: 0, retryAt: 0, retries: 0, rawText: '',
-  initialized: false, bandW: 0, bandPx: 0, bandTargetW: 0,
+  // bandW：当前采样窗口宽（世界单位），必须与画布**同帧**更新，否则字会被切
+  // curveW：曲率参照宽，可以慢慢跟（曲率差一点点看不出来）
+  initialized: false, bandW: 0, bandPx: 0, bandTargetW: 0, curveW: 0,
   cacheIndex: null, cacheIndexAt: -1e9, cacheIndexPending: false
 };
 let lyricsGroup = null, lyricsMesh = null, lyricsTexture = null, lyricsMaterial = null;
@@ -73,7 +75,7 @@ function decodeLyricBuffer(buffer) {
 }
 function updateLyricsStatus() {
   const detail = LYRICS.source ? ' · ' + LYRICS.source : '';
-  const labels = { demo: '浏览器演示歌词', loading: '正在读取歌词…', ready: LYRICS.lines.length + ' 行歌词已载入', empty: '未载入歌词', invalid: '没有识别到有效时间戳', error: '未找到歌词（本地无匹配、在线也未命中）', instrumental: '这首歌没有歌词（纯音乐）', 'non-music': '当前是视频/图片会话，已忽略' };
+  const labels = { demo: '浏览器演示歌词', loading: '正在读取歌词…', ready: LYRICS.lines.length + ' 行歌词已载入', empty: '未载入歌词', invalid: '没有识别到有效时间戳', error: '未找到本地歌词（把 LRC 放进 lyrics/ 或用歌词文件夹指定）', instrumental: '这首歌没有歌词（纯音乐）', 'non-music': '当前是视频/图片会话，已忽略' };
   const text = (labels[LYRICS.status] || '') + detail;
   const el = document.getElementById('lyricsstatus');
   if (el) el.textContent = text;
@@ -193,8 +195,7 @@ function lyricsStorePut(key, text) {
    本地歌词索引（由 tools/sync-lyrics.js 从 QQ 音乐缓存解密生成）
    ----------------------------------------------------------------------------
    为什么需要索引：光靠文件名匹配「歌名 - 歌手.lrc」时，同名不同曲、同名不同版本
-   会互相顶掉；而在线库更是经常把另一首同名歌当成这首（用户实际遇到的就是这个）。
-   索引里每条都带 duration，用「歌名 + 歌手 + 时长」三重比对，几乎不会串。
+   会互相顶掉。索引里每条都带 duration，用「歌名 + 歌手 + 时长」三重比对，几乎不会串。
    ========================================================================== */
 const LYRICS_INDEX_URL = 'lyrics/_index.json';
 const LYRICS_INDEX_TTL = 30;          // 秒：同步器可能边听边补文件，过期就重读
@@ -283,7 +284,8 @@ function pushNameCandidates(candidates, title, artist) {
     }
   }
 }
-// 本地优先：手动路径 → QQ 缓存索引 → 壁纸 lyrics/ 同名文件 → 用户歌词文件夹 → 历史缓存 → 最后才联网
+// 本地查找：手动路径 → 本地索引 → 壁纸 lyrics/ 同名文件 → 用户歌词文件夹 → 历史缓存。
+// 全部是本地资源，找不到就干净地留空，不发起任何网络请求。
 function attemptLyricsLoad(force) {
   const title = String(MEDIA.title || '').trim();
   const artist = String(MEDIA.artist || '').trim();
@@ -313,7 +315,6 @@ function attemptLyricsLoad(force) {
         LYRICS.rawText = cached; LYRICS.source = '缓存 · ' + title; setLyricsLines(parsed, 'ready'); return;
       }
     }
-    if (CFG.onlineLyrics && usableTitle) { attemptOnlineLyrics(token); return; }
     setLyricsLines([], candidates.length ? 'error' : 'empty');
   };
   const beginLookup = function () {
@@ -323,7 +324,7 @@ function attemptLyricsLoad(force) {
     const tryNext = function () {
       if (token !== LYRICS.loadToken) return;
       if (i >= candidates.length) {
-        console.warn('LRC: no local lyric file matched, falling back to online', candidates.map(function (c) { return c.label; }));
+        console.warn('LRC: no local lyric file matched', candidates.map(function (c) { return c.label; }));
         fail(); return;
       }
       const c = candidates[i++];
@@ -363,13 +364,7 @@ function attemptLyricsLoad(force) {
     beginLookup();
   }
 }
-// 在线歌词：用 WE 给出的歌名/歌手去公开歌词库匹配，任何播放器（QQ音乐/网易云/Spotify）都适用
-const LYRICS_API = 'https://music-api.gdstudio.xyz/api.php';
-// 该接口的可用音源实测只有 netease 与 joox（tencent / kugou 一律返回
-// "Value of `source` is not supported."）。写在这里而不是猜，省得白等 6 秒超时
-const LYRICS_SOURCES = ['netease', 'joox'];
-let useFetchApi = typeof window !== 'undefined' && typeof window.fetch === 'function';
-let fetchFailures = 0;
+// 歌名 / 歌手归一化的 key（本地索引三重比对用；与在线无关，保留）
 function lyricKey(title, artist) {
   const strip = function (v) { return String(v || '').toLowerCase().replace(/[\s\-_·.,;:'"!?()（）\[\]【】&/、，。！？]/g, ''); };
   return strip(title) + '|' + strip(artist);
@@ -398,90 +393,6 @@ function artistMatch(a, b) {
 }
 // 合辑/原声带在歌词库里常被写成「群星」，这类歌手名不算有效比对依据
 const GENERIC_ARTIST = /^(群星|群星合唱|variousartists|va|未知|未知歌手|佚名|unknown|unknownartist)$/;
-// 统一带超时的 JSON 请求：WE 的 CEF 里请求有可能长时间挂着，没有超时就会一直停在“读取中”
-function fetchJson(url, onDone) {
-  let settled = false, timer = null, ctrl = null;
-  const finish = function (v) {
-    if (settled) return;
-    settled = true;
-    if (timer) clearTimeout(timer);
-    onDone(v);
-  };
-  timer = setTimeout(function () {
-    if (ctrl) { try { ctrl.abort(); } catch (e) {} }
-    finish(null);
-  }, 6500);
-  if (useFetchApi) {
-    const opts = { mode: 'cors', cache: 'no-store' };
-    try { if (typeof AbortController === 'function') { ctrl = new AbortController(); opts.signal = ctrl.signal; } } catch (e) { ctrl = null; }
-    fetch(url, opts)
-      .then(function (r) { return r.json(); })
-      .then(function (d) { finish(d); })
-      .catch(function (e) {
-        if (settled) return; // 超时主动 abort 的情况不算接口故障
-        fetchFailures++;
-        if (fetchFailures >= 2) useFetchApi = false; // fetch 连续失败就退回 XHR，CEF 版本差异下更稳
-        console.warn('lyrics api failed:', e && e.message);
-        finish(null);
-      });
-    return;
-  }
-  const xhr = new XMLHttpRequest();
-  xhr.open('GET', url, true); xhr.timeout = 6500;
-  xhr.onload = function () { try { finish(JSON.parse(xhr.responseText)); } catch (e) { finish(null); } };
-  xhr.onerror = function () { finish(null); };
-  xhr.ontimeout = function () { finish(null); };
-  xhr.onabort = function () { finish(null); };
-  try { xhr.send(); } catch (e) { finish(null); }
-}
-function scoreLyricHit(it, wantTitle, wantArtist, wantDuration, wantArtistRaw) {
-  const itArtist = Array.isArray(it.artist) ? it.artist.join(' ') : (it.artist || '');
-  const nameKey = lyricKey(it.name, '').split('|')[0];
-  const artistKey = lyricKey('', itArtist).split('|')[1];
-  let score = 0;
-  if (nameKey && nameKey === wantTitle) score += 3;
-  else if (nameKey && wantTitle && (nameKey.indexOf(wantTitle) >= 0 || wantTitle.indexOf(nameKey) >= 0)) score += 2;
-  // 网易云搜索经常把翻唱排在前面（原唱根本不在结果里），所以歌手权重最高；
-  // 退一步，标题里写着「原唱 周杰伦」的翻唱也基本沿用原词，也算命中
-  if (wantArtist && artistKey && artistMatch(itArtist, wantArtistRaw || wantArtist)) score += 4;
-  else if (wantArtist && nameKey && nameKey.indexOf(wantArtist) >= 0) score += 2;
-  else if (wantArtist) score -= 1;
-  const dur = hitDurationSec(it);
-  if (wantDuration > 15 && dur > 15) {
-    const diff = Math.abs(dur - wantDuration);
-    if (diff <= 3) score += 4;
-    else if (diff <= 8) score += 1;
-    else score -= 2;
-  }
-  return score;
-}
-// 接口里的时长（秒）：网易云风格会给毫秒的 interval，两种都认
-function hitDurationSec(it) {
-  const sec = Number(it.duration);
-  if (Number.isFinite(sec) && sec > 0) return sec;
-  const ms = Number(it.interval);
-  if (Number.isFinite(ms) && ms > 0) return ms / 1000;
-  return 0;
-}
-// 硬门槛：歌名必须对得上；歌手和时长至少有一项能对上。
-// 这条是「宁可没词，也不显示另一首歌」的底线 —— 同名不同曲就是这么串掉的
-function lyricHitPlausible(it, wantTitle, wantArtist, wantDuration, wantArtistRaw) {
-  const itArtist = Array.isArray(it.artist) ? it.artist.join(' ') : (it.artist || '');
-  const nameKey = lyricKey(it.name, '').split('|')[0];
-  if (!nameKey || !wantTitle) return false;
-  const titleExact = nameKey === wantTitle;
-  if (!titleExact && nameKey.indexOf(wantTitle) < 0 && wantTitle.indexOf(nameKey) < 0) return false;
-  const artistKey = lyricKey('', itArtist).split('|')[1];
-  const artistOk = !!(wantArtist && artistKey && artistMatch(itArtist, wantArtistRaw || wantArtist));
-  const dur = hitDurationSec(it);
-  const durOk = wantDuration > 15 && dur > 15 && Math.abs(dur - wantDuration) <= 8;
-  // 合辑/OST 在歌词库里常写成「群星」，不能当歌手不符来处理，只认歌名完全一致
-  const generic = titleExact && GENERIC_ARTIST.test(artistKey);
-  if (wantArtist && dur > 15) return artistOk || durOk || generic;
-  if (wantArtist) return artistOk || generic;
-  if (dur > 15) return durOk;
-  return titleExact;         // 歌手和时长都没有可比信息时，只认歌名完全一致
-}
 // 「纯音乐，请欣赏 / 暂无歌词」这类不是歌词，命中要跳过，否则会顶掉真正的匹配
 function lyricIsJunk(text) {
   const body = String(text || '').replace(/\[[^\]]*\]/g, '').replace(/[\s\-—_·.。,，!！~～]/g, '');
@@ -498,100 +409,7 @@ function lyricsAreCreditsOnly(parsed) {
   }
   return true;
 }
-// 有些歌词库只给「不带时间轴的整段文字」：均分到整首时长里，至少能同步显示，而不是一片空白
-function parsePlainLyrics(text, duration) {
-  const rows = String(text || '').split(/\r\n|\n|\r/)
-    .map(function (v) { return v.replace(/\[[^\]]*\]/g, '').trim(); })
-    .filter(function (v) { return !!v; });
-  if (rows.length < 2) return [];
-  const total = duration > 8 ? duration : rows.length * 8;
-  const step = total / (rows.length + 0.5);
-  return rows.map(function (v, i) { return { time: step * i, text: v }; });
-}
-// 搜索写法：原名+歌手 → 清洗名+歌手 → 只要歌名。日本/中文歌名带括号、feat. 时这一步很关键
-function lyricQueries(title, artist) {
-  const list = [];
-  const push = function (v) {
-    const s = String(v || '').replace(/\s+/g, ' ').trim();
-    if (s && list.indexOf(s) < 0) list.push(s);
-  };
-  const clean = cleanSongTitle(title);
-  push(title + (artist ? ' ' + artist : ''));
-  if (clean && clean !== title) push(clean + (artist ? ' ' + artist : ''));
-  push(title);
-  if (clean && clean !== title) push(clean);
-  push(artist ? artist + ' ' + title : title);
-  return list.slice(0, 3);
-}
-function attemptOnlineLyrics(token) {
-  const title = String(MEDIA.title || '').trim();
-  if (!title || title === '等待媒体播放' || title === '未知曲目') { setLyricsLines([], 'error'); return; }
-  if (!mediaIsMusic()) { setLyricsLines([], 'non-music'); return; }
-  const key = lyricKey(title, MEDIA.artist);
-  const wantTitle = lyricKey(title, '').split('|')[0];
-  const wantArtist = lyricKey('', MEDIA.artist).split('|')[1];
-  const wantDuration = Number(MEDIA.duration) || 0;
-  const queries = lyricQueries(title, MEDIA.artist);
-  let qi = 0, si = 0, lyricFetches = 0, searches = 0, onlyJunk = false;
-  const giveUp = function () {
-    if (token !== LYRICS.loadToken) return;
-    LYRICS.source = '试过 ' + LYRICS_SOURCES.join(' / ') + ' · ' + queries.length + ' 种写法';
-    setLyricsLines([], onlyJunk ? 'instrumental' : 'error');
-  };
-  const nextSource = function () {
-    si++;
-    if (si >= LYRICS_SOURCES.length) { qi++; si = 0; }
-    step();
-  };
-  const step = function () {
-    if (token !== LYRICS.loadToken) return;
-    if (qi >= queries.length || searches >= 6) { giveUp(); return; }
-    const source = LYRICS_SOURCES[si];
-    const q = encodeURIComponent(queries[qi]);
-    searches++;
-    fetchJson(LYRICS_API + '?types=search&source=' + source + '&name=' + q + '&count=8&pages=1', function (list) {
-      if (token !== LYRICS.loadToken) return;
-      if (!Array.isArray(list) || !list.length) { nextSource(); return; }
-      // 按匹配度排序，逐个试：有的条目有 lyric_id 但取回来是空/纯音乐，要能继续往下找
-      const ranked = [];
-      for (let i = 0; i < list.length; i++) {
-        const it = list[i] || {};
-        if (!it.lyric_id) continue;
-        // 硬门槛先过一遍：歌名对不上、歌手和时长也都不符的条目直接丢掉，
-        // 不参与排序 —— 否则它会因为「先被枚举到」而上位，显示成另一首歌
-        if (!lyricHitPlausible(it, wantTitle, wantArtist, wantDuration, MEDIA.artist)) continue;
-        ranked.push({ hit: it, score: scoreLyricHit(it, wantTitle, wantArtist, wantDuration, MEDIA.artist) });
-      }
-      ranked.sort(function (a, b) { return b.score - a.score; });
-      let ci = 0;
-      const tryCandidate = function () {
-        if (token !== LYRICS.loadToken) return;
-        if (ci >= ranked.length || ci >= 2 || lyricFetches >= 6) { nextSource(); return; }
-        const hit = ranked[ci++].hit;
-        lyricFetches++;
-        fetchJson(LYRICS_API + '?types=lyric&source=' + source + '&id=' + encodeURIComponent(hit.lyric_id), function (data) {
-          if (token !== LYRICS.loadToken) return;
-          const text = data && data.lyric ? String(data.lyric) : '';
-          if (!text || lyricIsJunk(text)) { if (text) onlyJunk = true; tryCandidate(); return; }
-          let parsed = parseLrc(text), plain = false;
-          if (!parsed.length) {
-            const spread = parsePlainLyrics(text, MEDIA.duration);
-            if (spread.length) { parsed = spread; plain = true; }
-          }
-          if (!parsed.length) { tryCandidate(); return; }
-          if (lyricsAreCreditsOnly(parsed)) { onlyJunk = true; tryCandidate(); return; }
-          LYRICS.rawText = text;
-          lyricsStorePut(key, text);
-          LYRICS.source = (plain ? '在线(无时间轴) · ' : '在线 · ') + source + ' · ' + (hit.name || title);
-          setLyricsLines(parsed, 'ready');
-        });
-      };
-      tryCandidate();
-    });
-  };
-  step();
-}
-// 兜底守护：万一属性回调没触发、在线请求失败或迟迟不返回，自动重试，不用手动刷新壁纸
+// 兜底守护：万一属性回调没触发，或本地文件暂时读不到，自动重试，不用手动刷新壁纸
 let lastLyricWatch = 0;
 function lyricWatchdog(nowSec) {
   if (!IN_WE) return;
@@ -637,7 +455,11 @@ function lyricIndexAt(position) {
    ========================================================================== */
 /* 画布的「基准」尺寸与密度。真正的当前值由 syncLyricsResolution() 按渲染分辨率
    档位放大 —— 字的**世界尺寸**不变，只是每单位塞进更多像素，4K 下才不会糊。 */
-const LYRICS_BASE_W = 2048, LYRICS_BASE_H = 512, LYRICS_BASE_PPU = 72;
+// 画布高从 512 提到 640：行距放宽后，s=1.3 时两行 + 换句时溢出的第三行
+// 会顶到画布下沿被裁（512 高时只剩 20 来像素余量，太险）。
+// 画布只是「纸张」—— PPU 不变，所以字的世界尺寸和幕布上的观感完全不变，
+// 幕布本身会高一点（CANVAS_H/PPU），但材质透明、上下都是空行，看不出差别。
+const LYRICS_BASE_W = 2048, LYRICS_BASE_H = 640, LYRICS_BASE_PPU = 72;
 let LYRICS_SCALE = 1;
 let LYRICS_CANVAS_W = LYRICS_BASE_W, LYRICS_CANVAS_H = LYRICS_BASE_H;
 let LYRICS_PPU = LYRICS_BASE_PPU;         // 画布像素 / 世界单位
@@ -652,6 +474,8 @@ const LYRIC_TYPE = { active: 1.60, passive: 0.95 };   // 字高（世界单位�
 // （2028px）以内，不会踩到「画布宽」这条隐藏约束；16:9 下最长行（×1.07 ≈ 28.9）约占屏宽 44%。
 const LYRIC_MAX_W = 27;
 const LYRIC_FONT = '"Segoe UI", "Microsoft YaHei", sans-serif';
+// 当前行的基线在画布上的相对高度（0.55 = 略偏下，屏幕上的视觉重心贴近下三分之一）
+const LYRIC_ANCHOR = 0.55;
 
 // 渲染分辨率档位变了 → 换一张更密（或更疏）的画布。
 // 关键：所有排版量都按 PPU 换算，所以画布变大不会让字变大，屏幕上的效果完全一致。
@@ -691,8 +515,15 @@ function lyricFrameList(nowSec) {
   const aPx = LYRIC_TYPE.active * LYRICS_PPU * s;
   const pPx = LYRIC_TYPE.passive * LYRICS_PPU * s;
   const H = LYRICS_CANVAS_H;
-  const AY = Math.round(H * 0.55);
-  const PY = Math.round(AY + pPx * 1.55);
+  const AY = Math.round(H * LYRIC_ANCHOR);
+  // 两行之间的基线间距按「当前行」字号算，不按下一行字号算（原来是 pPx × 1.55）：
+  // 下行字小近一半，用它算出来的间距只有 0.92 个当前字高 —— 基线间距比字还窄，
+  // 字脚几乎贴着下一行的字头，这就是「两行挤在一起」的来源。
+  // 1.20 倍当前字高是中文排版里偏舒适的疏排，字脚到下一行字头还留着大半个下行字高。
+  // 想更松/更紧用属性面板「歌词行距」调（70–180%，即 0.70–1.80 倍）。
+  const gapPx = aPx * clamp(CFG.lyricsGap, 0.7, 1.8);
+  // 下行不许跌出画布：给它留 0.95 倍字高的余量（含字形下缘与换句时淡入的第三行）
+  const PY = Math.round(Math.min(AY + gapPx, H - pPx * 0.95));
   const rise = H * 0.30;
   const tr = LYRICS.transition;
   const out = [];
@@ -726,23 +557,20 @@ function paintLyricsFrame(nowSec) {
   const canvas = lyricsTexture.image, ctx = canvas.getContext('2d');
   const list = lyricFrameList(nowSec);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  // 第一遍：量宽。太长就整体缩字，保证永远画得下，也不会撑出画布
+  // 第一遍：量宽，太长就缩字，保证永远画得下，也不会撑出画布。
+  // 注意缩字是**逐行**做的，不是整帧统一缩 —— 整帧统一缩时，
+  // 只要下一句很长，正在唱的这一行也会跟着缩小，看起来就是「字先大后小」。
+  // 长句自己缩排才是正常的字幕行为，短句不该被邻居连累。
+  const room = Math.min(canvas.width - LYRIC_EDGE_PX * 2, LYRIC_MAX_W * LYRICS_PPU);
   let widest = 1;
   for (let i = 0; i < list.length; i++) {
     const it = list[i];
     it.w = lyricMeasure(ctx, it.entry.text, it.px, it.weight);
-    if (it.w > widest) widest = it.w;
-  }
-  // 量宽的上限：既要放得进画布，也不许超过 LYRIC_MAX_W 个世界单位
-  const room = Math.min(canvas.width - LYRIC_EDGE_PX * 2, LYRIC_MAX_W * LYRICS_PPU);
-  const shrink = widest > room ? room / widest : 1;
-  if (shrink < 1) {
-    for (let i = 0; i < list.length; i++) {
-      const it = list[i];
-      it.px *= shrink; it.w *= shrink;
-      it.y = canvas.height * 0.55 + (it.y - canvas.height * 0.55) * shrink;
+    if (it.w > room) {
+      const k = room / it.w;
+      it.px *= k; it.w *= k;
     }
-    widest *= shrink;
+    if (it.w > widest) widest = it.w;
   }
   // 第二遍：落笔。画布上就是正常横排 —— 弯曲交给曲面
   for (let i = 0; i < list.length; i++) {
@@ -762,9 +590,11 @@ function paintLyricsFrame(nowSec) {
     }
     ctx.restore();
   }
-  // 幕布宽度目标 = 这一帧最长的行 × 留白。真正生效的宽度在 updateLyrics 里平滑收敛，
-  // 这样换句时曲率是「缓缓变一点」，不会啪地跳一下。
-  const px = clamp(widest * LYRIC_MARGIN, 120, canvas.width);
+  // 幕布宽度目标 = 这一帧最长的一行 × 留白。必须把所有可见行都算进去，
+  // 否则换句时提前露出的下一句会被幕布窗口裁掉两端。
+  // 上限取「画布可用宽」而不是整张画布宽：采样窗口 = bandW×PPU 像素，
+  // 一旦超过画布宽，窗口只能被 ClampToEdge 截断，横向比例就又被压掉几个百分点。
+  const px = clamp(widest * LYRIC_MARGIN, 120, canvas.width - LYRIC_EDGE_PX * 2);
   LYRICS.bandPx = px;
   LYRICS.bandTargetW = px / LYRICS_PPU;
   lyricsTexture.needsUpdate = true;
@@ -775,24 +605,60 @@ function paintLyricsFrame(nowSec) {
 function applyLyricsWindow() {
   if (!lyricsTexture) return;
   const rep = clamp01(((LYRICS.bandW || 18) * LYRICS_PPU) / LYRICS_CANVAS_W);
+  const off = (1 - rep) * 0.5;
   lyricsTexture.repeat.set(rep, 1);
-  lyricsTexture.offset.set((1 - rep) * 0.5, 0);
+  lyricsTexture.offset.set(off, 0);
+  // 真正生效的是这条：three 的 repeat/offset 只对内置材质有效，
+  // 自定义 ShaderMaterial 必须自己把窗口传进 uniform（否则整张 2048 画布被拉满幕布，
+  // 字的横向尺寸会跟着幕布宽度变 —— 换句时「内缩一下」就是这么来的）。
+  if (lyricsMaterial && typeof setPanelMapWindow === 'function') {
+    setPanelMapWindow(lyricsMaterial, rep, off);
+  }
 }
 let lyricsArcKey = '';
 // 幕布：宽 = 文字宽度，高 = 画布高 / PPU（常量）。曲率按自身宽度归一（见 band.js）
 function lyricsBandHeight() { return LYRICS_CANVAS_H / LYRICS_PPU; }
 function buildLyricsMeshGeometry() {
   const w = Math.max(2, LYRICS.bandW || 18);
-  return bandPatchGeometry(0, w, lyricsBandHeight(), 0, 64, w);
+  // 几何宽用 bandW（瞬时值），曲率参照宽用 curveW（平滑值）—— 两者必须解耦：
+  // 几何宽一旦落后于画布，采样窗口就装不下整行字，两端会被切掉（见 updateLyricsGeometry）。
+  // 曲率只是「按这个宽度算弧有多深」，差一点点完全看不出来，所以可以慢慢跟。
+  const ref = Math.max(2, LYRICS.curveW || w);
+  return bandPatchGeometry(0, w, lyricsBandHeight(), 0, 64, ref);
 }
-function updateLyricsGeometry() {
+function updateLyricsGeometry(dt) {
   if (!lyricsMesh) return;
-  // 变宽：立刻跟上（长句不能被窄幕布裁掉）；变窄：逐帧收敛（弧度的变化要看不出来）
-  const target = LYRICS.bandTargetW || LYRICS.bandW || 18;
-  if (!LYRICS.bandW || target > LYRICS.bandW) LYRICS.bandW = target;
-  else LYRICS.bandW += (target - LYRICS.bandW) * 0.16;
+  /* 为什么宽度必须瞬时跟随（重要，别改回平滑）：
+     画布是用来「画这一帧的字」的，采样窗口是用来「截画布中间一段贴到幕布上」的。
+     两者必须严格对应：窗口宽 = bandW × PPU 像素，而这一帧最宽的那行是 widest 像素。
+     只要窗口比 widest 窄，字的两端就落在 UV [0,1] 之外，被 ClampToEdge 吃掉 ——
+     屏幕上看到的就是「整行字变短了一点」，等窗口慢慢长大再恢复。
+
+     以前的写法是「变宽 0.30s、变窄 0.65s」双向平滑，等于让窗口永远慢半拍：
+     换到比上一句更长的歌词时，画布立刻变宽，窗口还停在上一句的窄宽度，
+     字就被切掉两端、看起来「内缩一下」，0.3 秒后才长回来。
+     而宽度本身并不决定字号（PPU 恒定，1 像素永远 = 1/PPU 世界单位），
+     所以瞬时切换没有任何副作用，纯赚。
+
+     只有「曲率」需要平滑：它由 curveW 单独驱动，宽度和它解耦。 */
+  // 下限保险：窗口至少要装得下这一帧画布上最宽的那行（bandPx 就是 widest × 1.07）。
+  // 正常情况下 bandTargetW 恒等于 bandPx / PPU，这条只是防止极端时序（画布刚重画、
+  // 目标宽度还没写入）把窗口压到最小值，那会把整行字挤成一条。
+  const target = Math.max(LYRICS.bandTargetW || 0, (LYRICS.bandPx || 0) / LYRICS_PPU)
+    || LYRICS.bandW || 18;
+  const step = clamp(Number(dt) || 1 / 60, 1 / 240, 0.1);
+  if (!LYRICS.bandW) { LYRICS.bandW = target; LYRICS.curveW = target; }
+  else {
+    LYRICS.bandW = target;
+    if (!LYRICS.curveW) LYRICS.curveW = target;
+    else {
+      LYRICS.curveW += (target - LYRICS.curveW) * (1 - Math.exp(-step / 0.45));
+      if (Math.abs(target - LYRICS.curveW) < 0.002) LYRICS.curveW = target;
+    }
+  }
   applyLyricsWindow();
-  const key = LYRICS.bandW.toFixed(3) + '|' + CFG.lyricsCurve.toFixed(3);
+  // key 量化到 0.01 世界单位：曲率在收敛的 0.45 秒里不必每帧重建几何
+  const key = LYRICS.bandW.toFixed(3) + '|' + LYRICS.curveW.toFixed(2) + '|' + CFG.lyricsCurve.toFixed(3);
   if (key === lyricsArcKey) return;
   lyricsArcKey = key;
   lyricsMesh.geometry.dispose();
@@ -813,6 +679,10 @@ function buildLyrics() {
   // 掠射时不该像封面那样被压暗，只留一点点边缘偏冷。
   lyricsMaterial = makePanelMaterial({
     map: lyricsTexture, ambientGain: 1.10, glassLoss: 0.50, f0: 0.03,
+    // 下方湖面的光：歌词是悬浮的字，没有玻璃底板去承接反射，所以只受 45%；
+    // 衰减也放缓（1.4 而不是 2.6），否则幕布上沿会被算成「照不到光」，
+    // 两行字的明暗差会压过「当前行亮、下一行暗」的设计
+    bounceScale: 0.45, bounceFalloff: 1.4,
     shape: false, scanRows: 48, scanStrength: 0.016, side: THREE.DoubleSide
   });
   if (!LYRICS.bandW) LYRICS.bandW = 18;
@@ -820,6 +690,7 @@ function buildLyrics() {
   lyricsMesh.renderOrder = 6;
   lyricsGroup.add(lyricsMesh); camera.add(lyricsGroup);
   lyricsGroup.visible = false;
+  applyLyricsWindow();     // 建好就把采样窗口设上，否则第一帧会用「整张画布铺满幕布」的默认值
 }
 function updateLyrics(nowSec) {
   if (!lyricsGroup) return;
@@ -838,7 +709,9 @@ function updateLyrics(nowSec) {
   }
   // 先画（顺便量出这一帧的幕布宽度），再按宽度重建几何
   if (LYRICS.dirty || LYRICS.transition) paintLyricsFrame(nowSec);
-  updateLyricsGeometry();
+  const geomDt = LYRICS.lastGeomAt ? clamp(nowSec - LYRICS.lastGeomAt, 0, 0.1) : 1 / 60;
+  LYRICS.lastGeomAt = nowSec;
+  updateLyricsGeometry(geomDt);
   lyricsGroup.position.set(0, viewHeight * (0.258 + CFG.lyricsY / 100), 0);
   // 环绕位置：整块幕布绕相机竖轴滑到圆周上的别处（和专辑卡一样贴着幕布挪），
   // 挪开之后一端离你近、一端离你远，纵深自然变成不对称的。正数向右，和专辑卡同一套符号

@@ -1,5 +1,5 @@
 {
-	"description": "A spectral cube lake with one shared curved screen for the album card and two-line lyrics. Grouped settings: audio response, camera, performance presets, media card and lyrics. Stepped sliders use integer percent values (100 = default) so every step is reachable.",
+	"description": "午夜蓄能湖 · 音乐驱动的发光立方体湖面，专辑卡与双行歌词贴在同一块弧形屏上。纯本地歌词，不联网。【EN】Midnight Reservoir — a spectral cube lake that breathes with your music. Album card and two-line lyrics share one curved glass screen. Local LRC only, no online service. Grouped settings for audio response, camera, performance, media card and lyrics.",
 	"file": "index.html",
 	"preview": "preview.jpg",
 	"general": {
@@ -311,6 +311,15 @@
 				"min": 60,
 				"max": 130,
 				"condition": "showlyrics.value == true",
+				"order": 32
+			},
+			"lyricsgappct": {
+				"text": "歌词行距（%）",
+				"type": "slider",
+				"value": 120,
+				"min": 70,
+				"max": 180,
+				"condition": "showlyrics.value == true",
 				"order": 31
 			},
 			"lyricscurvepct": {
@@ -320,7 +329,7 @@
 				"min": 0,
 				"max": 200,
 				"condition": "showlyrics.value == true",
-				"order": 32
+				"order": 33
 			},
 			"lyricsyx10": {
 				"text": "歌词高度（10=1.0）",
@@ -329,7 +338,7 @@
 				"min": -80,
 				"max": 80,
 				"condition": "showlyrics.value == true",
-				"order": 33
+				"order": 34
 			},
 			"lyricsorbit": {
 				"text": "歌词环绕位置",
@@ -338,24 +347,17 @@
 				"min": -25,
 				"max": 25,
 				"condition": "showlyrics.value == true",
-				"order": 34
+				"order": 35
 			},
 			"lyricsoffset": {
 				"text": "歌词偏移 ms（负=提前）",
 				"type": "textinput",
 				"value": "0",
 				"condition": "showlyrics.value == true",
-				"order": 35
+				"order": 36
 			},
 			"hidecredits": {
 				"text": "跳过开头的词曲署名",
-				"type": "bool",
-				"value": true,
-				"condition": "showlyrics.value == true",
-				"order": 36
-			},
-			"onlinelyrics": {
-				"text": "联网歌词匹配",
 				"type": "bool",
 				"value": true,
 				"condition": "showlyrics.value == true",
@@ -384,6 +386,6 @@
 			}
 		}
 	},
-	"title": "Spectral Lake 3D · Shader",
+	"title": "Midnight Reservoir · 午夜蓄能湖",
 	"type": "web"
 }

@@ -18,8 +18,8 @@ const CFG = {
   cameraAngle: 24, cameraAzimuth: 120, cameraDistance: 92, cameraFov: 50, range: 1.20,
   resolution: 'auto', renderRatio: 1, renderScale: 1.0, parallax: true,
   showMedia: true, mediaScale: 0.60, mediaOrbit: -10, mediaY: 1.2, titleScale: 1.0,
-  showLyrics: true, lyricsScale: 0.90, lyricsY: 0, lyricsCurve: 1.0, lyricsOrbit: 0, lyricsOffset: 0, lyricsDir: '',
-  onlineLyrics: true, lyricsDebug: false, hideCredits: true, musicOnly: true, idleMark: true,
+  showLyrics: true, lyricsScale: 0.90, lyricsGap: 1.20, lyricsY: 0, lyricsCurve: 1.0, lyricsOrbit: 0, lyricsOffset: 0, lyricsDir: '',
+  lyricsDebug: false, hideCredits: true, musicOnly: true, idleMark: true,
   fps: 60,        // 属性面板「FPS 上限」
   fpsGlobal: 0    // WE 性能设置里的全局帧率（0 = 没设），两者取小才是真实上限
 };
