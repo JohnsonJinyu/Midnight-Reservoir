@@ -351,6 +351,13 @@ const PANEL_VERT = `
 const PANEL_FRAG = `
   uniform sampler2D uMap;
   uniform float uUseMap;
+  // 贴图采样窗口：uv 0..1 铺满整块面，但可以从画布上只截一块区域来铺。
+  // 歌词靠它把「画布中央 = 这一帧文字宽度」的那一段贴到幕布上，于是
+  // 1 画布像素恒等于 1/PPU 世界单位 —— 字号与幕布宽度彻底解耦。
+  // ★ 必须自己传 uniform：three 的 texture.repeat / offset 只对**内置材质**生效，
+  //   自定义 ShaderMaterial 里直接 texture2D(uMap, vUv) 是读不到它的（踩过一次）。
+  uniform vec2  uUvScale;
+  uniform vec2  uUvOffset;
   uniform vec3  uEmission;      // 无贴图时的自发光色（sRGB）
   uniform vec3  uAmbient;       // 环境辐照度（sRGB）：决定黑位
   uniform float uAmbientGain;
@@ -367,6 +374,9 @@ const PANEL_FRAG = `
   uniform float uScanRows;
   uniform float uScanStrength;
   uniform float uGain;
+  uniform vec3  uBounceColor;   // 下方湖面弹上来的光（sRGB）
+  uniform float uBounceGain;    // 强度：每帧由湖面能量写入
+  uniform float uBounceFalloff; // 沿面板高度向下集中的指数，越大越只亮底部
   uniform vec3  uFogColor;
   uniform float uFogRange;
   varying vec2 vUv;
@@ -392,10 +402,11 @@ const PANEL_FRAG = `
   void main() {
     float d = panelSdf(vUv, uAspect, uRadius);
     float mask = mix(1.0, 1.0 - smoothstep(-0.0035, 0.0035, d), uShape);
-    // 边缘漏光：只有贴边那一圈，向内 3% 面板高就衰完
-    float rim = exp(-max(-d, 0.0) / 0.026) * step(d, 0.005) * uShape;
+    // 边缘漏光：只有贴边那一圈，向内 1.6% 面板高就衰完。
+    // 宽度不要放大 —— 2.6% 时它看起来不是「背光漏出来」，而是一圈发光描边。
+    float rim = exp(-max(-d, 0.0) / 0.016) * step(d, 0.004) * uShape;
 
-    vec4 tex = texture2D(uMap, vUv);
+    vec4 tex = texture2D(uMap, vUv * uUvScale + uUvOffset);
     float a = mix(1.0, tex.a, uUseMap) * mask * uOpacity;
     vec3 E = mix(uEmission, tex.rgb, uUseMap);
     E = toLinear(E) * uGain;
@@ -415,6 +426,26 @@ const PANEL_FRAG = `
 
     vec3 col = E * (1.0 - F * uGlassLoss) + env * F;
     col += toLinear(uRimColor) * rim * uRim;
+
+    // ── 下方湖面弹上来的光（上投射 / bounce light）──
+    // 物理上：湖面是 y≈0 的一片发光面，面板挂在它上方。光从下面来，所以
+    //   · 越靠近面板底部，距离越近（1/r²）→ 用 (1−vUv.y) 的幂次近似这个衰减；
+    //   · 光要穿过玻璃才能照到屏幕内容，菲涅尔反射越强透进去越少 → 乘 (1−F)；
+    //   · 玻璃自身的镜面反射里也会映到这片光 → 乘 towardLake（反射方向朝下时才加）。
+    // uBounceGain 每帧由 lake.js 按湖面当前能量写入，所以底鼓一响、湖面一亮，
+    // 这块屏的下沿会跟着亮起来 —— 两块内容才像摆在同一个光源下，而不是各贴各的。
+    // 光只到玻璃「表面」：真实屏幕的下方光打不到液晶层，所以它不是给整块面板染色，
+    // 而是把下半部照亮。upMix 用 2.6 次幂（不是 5）：5 次幂时只有紧贴下沿的一条薄带
+    // 有反应，整块屏看上去还是均匀的死紫，肉眼看不出「下面有光」；而湖面是一片很大的
+    // 发光面，不是点光源，它的照度沿高度衰减本来就比 1/r² 更缓。
+    // 另外单独加一条「下棱」高光（lip）—— 玻璃下沿的倒角会直接抓到这片光，
+    // 真实照片里那一道暖边比渐变本身更能让人认出光源在下方。
+    float down = clamp(1.0 - vUv.y, 0.0, 1.0);          // 1 = 面板下沿
+    float upMix = pow(down, max(uBounceFalloff, 0.5));
+    float lip = smoothstep(0.88, 1.0, down) * uShape;   // 只给有实际边界的面板，文字层不画
+    vec3 bounce = toLinear(uBounceColor) * uBounceGain;
+    col += bounce * (upMix * (0.46 + 0.42 * (1.0 - F)) + lip * 0.30);
+    col += bounce * 0.22 * towardLake * F;
 
     float scan = 0.5 + 0.5 * sin(vUv.y * 3.14159265 * uScanRows);
     col *= 1.0 - uScanStrength * (1.0 - scan);
@@ -447,6 +478,7 @@ const AURA_FRAG = `
   uniform float uSpread;
   uniform float uFalloff;
   uniform float uPanelScale;    // 这块贴片是面板的几倍大：把 uv 还原到「面板坐标系」再算 SDF
+  uniform float uHazeMix;       // 光晕色与环境霾色的混合比：空气散射会带走一部分原色
   uniform vec3  uFogColor;
   uniform float uFogRange;
   varying vec2 vUv;
@@ -476,7 +508,11 @@ const AURA_FRAG = `
     float d = panelSdf(uvPanel, uAspect, uRadius);
     float x = max(d, 0.0) / max(uSpread, 0.001);
     float g = exp(-x * uFalloff) * (1.0 - smoothstep(0.80, 1.20, x));
-    vec3 c = toLinear(uColor) * uStrength;
+    // 屏幕的光穿过空气时会被散射：色相留一点，但饱和度和「鲜艳度」会掉，
+    // 并混进环境自身的霾色。不混的话，一张米白色封面的光晕会在暗场里泛成一片白光，
+    // 看起来像块发光的云而不是「屏幕照亮了周围的空气」。
+    vec3 base = mix(uColor, uFogColor, clamp(uHazeMix, 0.0, 1.0));
+    vec3 c = toLinear(base) * uStrength;
     vec3 haze = toLinear(uFogColor);
     c = mix(c, haze, bandFog(length(vViewPos), uFogRange) * 0.6);
     vec3 srgb = toSrgb(c);

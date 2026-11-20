@@ -1,0 +1,13 @@
+# 统一按 LF 存储：本项目所有文件都由脚本以 LF 写入（Python newline='\n'），
+# 关掉 autocrlf 的“检出转 CRLF”行为，避免每次提交刷一屏
+# "LF will be replaced by CRLF" 警告，也避免不同机器上出现整文件 diff。
+* text=auto eol=lf
+
+# 二进制，git 不要做任何换行转换或文本 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary

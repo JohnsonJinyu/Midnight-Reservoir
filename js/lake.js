@@ -224,6 +224,19 @@ function render(nowSec) {
   u.uAir.value = 0;
   u.uLightGain.value = clamp(S.lightEnergy / Math.max(0.12, S.energy), 0.25, 1.25);
   u.uLightSubBass.value = S.lightSubBass;
+  // 湖面自身亮度 → 上方两块屏（专辑卡 / 歌词）的下沿受光。
+  // 三项相加：基础发光（跟 glow 档位走）+ 音频能量 + 静音呼吸，
+  // 所以安静时只有薄薄一层，底鼓一响就明显抬起来 —— 这是「两块内容在同一光源下」的证据。
+  if (typeof setPanelBounce === 'function') {
+    const lakeLum = clamp(
+      0.14 + 0.58 * S.lightEnergy + 0.18 * clamp(CFG.glow / 1.2, 0, 1) + 0.08 * S.idleMix,
+      0, 1
+    );
+    // 系数要比「物理上算得对」更激进一点：面板本身是深色屏，黑位只有 ~20/255，
+    // 光按 1/r² 老实衰减到 +5/255 时人眼在暗场里根本分不出来。安静时 0.15、
+    // 底鼓一响冲到 0.4 以上，下沿的暖色渐变才会有肉眼看得到的「呼吸」。
+    setPanelBounce(0.05 + 0.42 * lakeLum);
+  }
   const rippleStart = Math.max(0, S.ripples.length - 10);
   for (let i = 0; i < RIPPLE_COUNT; i++) {
     const rp = i < 10 ? S.ripples[rippleStart + i] : null;

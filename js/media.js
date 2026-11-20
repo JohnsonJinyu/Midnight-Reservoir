@@ -318,7 +318,7 @@ function buildMediaCard() {
      面板挡住了它背后幕布的光，所以外围一圈更暗。但影子内部不是纯黑 ——
      环境光会从四周回弹进来，所以用近黑带紫，而不是 #000（纯黑会像挖了个洞）。 */
   mediaShadowMaterial = makeAuraMaterial({
-    color: 0x06020e, strength: 0.65, spread: 0.46, falloff: 0.9,
+    color: 0x06020e, strength: 0.50, spread: 0.46, falloff: 1.1,
     blending: THREE.NormalBlending, side: DS
   });
   const shadow = new THREE.Mesh(new THREE.BufferGeometry(), mediaShadowMaterial);
@@ -327,9 +327,15 @@ function buildMediaCard() {
   /* ② 光晕（B2）
      以前是一张 Sprite —— 永远正对相机的平面，贴在半径 41.4 处，跟曲面没关系。
      现在改成贴着幕布曲面的一片：光跟着弧面铺开、随面板起伏一起动。
-     强度由封面平均亮度驱动，颜色取 WE 提取的主色（见 updateMediaCard）。 */
+     强度由封面平均亮度驱动，颜色取 WE 提取的主色（见 updateMediaCard）。
+
+     范围收到「贴边一小圈就衰完」：真实屏幕照亮周围空气是**近距离快速衰减**的，
+     光晕超过面板高度的一半就会读成一团发光的雾，而不是屏幕的边缘亮。
+     所以 spread 0.30（0.3 个面板高就衰到几乎为零）、falloff 3.0（衰减更陡），
+     贴片本身也只放到面板的 2.0 倍 —— 再大只是给雾更大的活动空间。
+     颜色混进 35% 的场景霾色：空气散射不会让光保持原饱和度。 */
   mediaHaloMaterial = makeAuraMaterial({
-    color: MEDIA.primaryColor, strength: 0.20, spread: 0.78, falloff: 1.7, side: DS
+    color: MEDIA.primaryColor, strength: 0.012, spread: 0.30, falloff: 3.0, hazeMix: 0.35, side: DS
   });
   const halo = new THREE.Mesh(new THREE.BufferGeometry(), mediaHaloMaterial);
   halo.renderOrder = 1; mediaGroup.add(halo);
@@ -450,7 +456,7 @@ function applyMediaScale(scale) {
   const shadowK = 2.6;
   setGeo(p.shadow, bandPatchGeometry(0, panelW * shadowK, panelH * shadowK, -0.42, 48, CARD_REF_WIDTH));
   setAuraShape(mediaShadowMaterial, aspect, panelR, shadowK);
-  const haloK = 3.6;
+  const haloK = 2.0;
   setGeo(p.halo, bandPatchGeometry(0, panelW * haloK, panelH * haloK, -0.26, 48, CARD_REF_WIDTH));
   setAuraShape(mediaHaloMaterial, aspect, panelR, haloK);
 
@@ -513,9 +519,20 @@ function updateMediaCard(nowSec) {
   const lumDt = MEDIA.lumStamp ? clamp(nowSec - MEDIA.lumStamp, 0, 0.25) : 0;
   MEDIA.lumStamp = nowSec;
   if (lumDt > 0) MEDIA.lumSmooth += (MEDIA.coverLum - MEDIA.lumSmooth) * (1 - Math.pow(0.02, lumDt / 0.6));
-  const screenLum = clamp01(MEDIA.lumSmooth);
-  if (mediaHaloMaterial) mediaHaloMaterial.panelUniforms.uStrength.value = 0.05 + 0.34 * screenLum;
-  if (mediaPanelMaterial) mediaPanelMaterial.panelUniforms.uRim.value = 0.06 + 0.30 * screenLum;
+  // coverLum 是从 canvas 读出来的 **sRGB 感知值**，不是光通量。辐照度正比于线性亮度，
+  // 所以先按 gamma 2.2 还原：中灰 0.5 → 0.22，亮白 0.9 → 0.79。
+  // 以前直接拿感知值线性驱动，等于把所有中灰封面都当成「很亮」，
+  // 结果一张米白封面糊出一大团白光 —— 这是「光晕突兀」的根因。
+  const screenFlux = Math.pow(clamp01(MEDIA.lumSmooth), 2.2);
+  if (mediaHaloMaterial) mediaHaloMaterial.panelUniforms.uStrength.value = 0.012 + 0.085 * screenFlux;
+  if (mediaPanelMaterial) mediaPanelMaterial.panelUniforms.uRim.value = 0.02 + 0.09 * screenFlux;
+  // 接触阴影跟着湖面亮度走，但方向是「更明显」而不是「变浅」：
+  // AO 的本质是面板挡住了背后的光，背景越亮，被挡的那块和周围的差越大，影子越清楚。
+  // 面板底沿被湖面打亮（uBounce，见 PANEL_FRAG）同时发生，两者合起来才有「悬在上面」的立体感。
+  if (mediaShadowMaterial) {
+    const lit = clamp01(PANEL_LIGHT.gain / 0.42);
+    mediaShadowMaterial.panelUniforms.uStrength.value = 0.26 + 0.26 * lit;
+  }
   const viewHeight = bandViewHeight();
   const viewWidth = viewHeight * camera.aspect;
   const fit = Math.min(1, viewWidth / 21);
